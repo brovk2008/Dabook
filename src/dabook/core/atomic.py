@@ -164,7 +164,7 @@ def is_valid_commit(d: Path, *, deep: bool = False) -> bool:
     if not m.is_file():
         return False
     try:
-        manifest: dict[str, Any] = json.loads(m.read_text())
+        manifest: dict[str, Any] = json.loads(m.read_text(encoding="utf-8"))
     except Exception:
         return False
     for rel, info in manifest.get("files", {}).items():
@@ -180,7 +180,7 @@ def is_valid_commit(d: Path, *, deep: bool = False) -> bool:
 
 def read_manifest(d: Path) -> dict[str, Any]:
     m = d / "_SUCCESS"
-    return json.loads(m.read_text())
+    return json.loads(m.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ def create_app(
     async def root() -> HTMLResponse:
         index = static_dir / "index.html"
         if index.is_file():
-            return HTMLResponse(index.read_text())
+            return HTMLResponse(index.read_text(encoding="utf-8"))
         return HTMLResponse("<h1>DABOOK</h1><p>Dashboard loading…</p>")
 
     # ------------------------------------------------------------------ #
