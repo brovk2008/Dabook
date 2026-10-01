@@ -40,6 +40,7 @@
     <nav id="nav">
       <button class="nav-tab active" data-panel="overview" onclick="switchPanel('overview')">Overview</button>
       <button class="nav-tab" data-panel="books" onclick="switchPanel('books')">Books</button>
+      <button class="nav-tab" data-panel="datasets" onclick="switchPanel('datasets')">Datasets</button>
       <button class="nav-tab" data-panel="settings" onclick="switchPanel('settings')">Settings</button>
       <button class="nav-tab" data-panel="logs" onclick="switchPanel('logs')">Logs</button>
       <div id="stale-indicator" class="stale-indicator" style="display:none">● Reconnecting…</div>
@@ -168,6 +169,47 @@
             <div class="upload-icon">📄</div>
             <p>Drop PDF files here or <label class="link" for="file-input">browse</label></p>
             <input id="file-input" type="file" accept=".pdf" multiple style="display:none" onchange="handleFileUpload(event)">
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ Datasets ═══ -->
+      <section id="panel-datasets" class="panel">
+        <div class="datasets-header">
+          <div>
+            <h2 class="panel-heading">Model Training Datasets</h2>
+            <p class="panel-sub">Train-ready continuous pretraining chapters, instruction pairs (ChatML / Alpaca), clean assembly code blocks, and RAG vectors.</p>
+          </div>
+          <div class="datasets-header-actions">
+            <button class="btn btn-primary" onclick="consolidateDatasets()">⚡ Consolidate All Books</button>
+            <button class="btn btn-ghost" onclick="loadDatasets()">↺ Refresh</button>
+          </div>
+        </div>
+
+        <!-- Dataset Cards Grid -->
+        <div class="dataset-cards-grid" id="dataset-cards-summary"></div>
+
+        <!-- Dataset Explorer / Preview -->
+        <div class="card dataset-preview-card">
+          <div class="dataset-preview-toolbar">
+            <div class="dataset-picker-wrap">
+              <label for="dataset-select" class="dataset-picker-label">Active Dataset:</label>
+              <select id="dataset-select" class="dataset-select" onchange="onSelectDataset()"></select>
+            </div>
+            <div class="dataset-view-toggle">
+              <button id="view-toggle-rendered" class="toggle-btn active" onclick="setDatasetView('rendered')">Rendered View</button>
+              <button id="view-toggle-json" class="toggle-btn" onclick="setDatasetView('json')">Raw JSONL</button>
+            </div>
+            <div class="dataset-pagination">
+              <button class="btn btn-ghost btn-sm" id="btn-prev-page" onclick="prevDatasetPage()">◀ Prev</button>
+              <span id="dataset-page-info" class="dataset-page-info">1 - 10</span>
+              <button class="btn btn-ghost btn-sm" id="btn-next-page" onclick="nextDatasetPage()">Next ▶</button>
+            </div>
+          </div>
+
+          <!-- Preview Content Container -->
+          <div id="dataset-preview-content" class="dataset-preview-content">
+            <div class="empty-preview">Select a dataset to preview</div>
           </div>
         </div>
       </section>

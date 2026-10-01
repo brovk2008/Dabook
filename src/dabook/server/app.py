@@ -253,6 +253,35 @@ def create_app(
         return JSONResponse(_run_doctor_checks(workspace, db_path))
 
     # ------------------------------------------------------------------ #
+    # Datasets (§8.4)
+    # ------------------------------------------------------------------ #
+    @app.get("/api/datasets")
+    async def get_datasets() -> JSONResponse:
+        from dabook.core.datasets import list_workspace_datasets
+
+        return JSONResponse(list_workspace_datasets(workspace))
+
+    @app.get("/api/datasets/preview")
+    async def get_dataset_preview(file: str, offset: int = 0, limit: int = 10) -> JSONResponse:
+        from dabook.core.datasets import read_dataset_preview
+
+        # Security check: avoid directory traversal
+        rel = Path(file)
+        if ".." in rel.parts or rel.is_absolute():
+            raise HTTPException(400, "Invalid file path")
+        return JSONResponse(
+            read_dataset_preview(workspace, file, offset=offset, limit=min(limit, 50))
+        )
+
+    @app.post("/api/datasets/consolidate")
+    async def consolidate_datasets_endpoint(request: Request) -> JSONResponse:
+        _require_token(request)
+        from dabook.core.datasets import consolidate_workspace_datasets
+
+        manifest = consolidate_workspace_datasets(workspace)
+        return JSONResponse({"ok": True, "manifest": manifest})
+
+    # ------------------------------------------------------------------ #
     # Workers (for swimlane)
     # ------------------------------------------------------------------ #
     @app.get("/api/workers")

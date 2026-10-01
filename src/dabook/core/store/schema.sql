@@ -156,6 +156,9 @@ INSERT OR IGNORE INTO settings (k, v, live, updated_at) VALUES
     ('quality.verified',    '0.95',1, 0),
     ('quality.good',        '0.85',1, 0),
     ('quality.review',      '0.70',1, 0),
+    ('dataset.merge_all',   '1',   1, 0),
+    ('dataset.filter_boilerplate', '1', 1, 0),
+    ('dataset.sft_format',  'both',1, 0),
     ('ui.port',             '8765',0, 0);
 
 -- ---------------------------------------------------------------------------

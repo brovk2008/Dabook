@@ -19,6 +19,15 @@ import ftfy
 
 from dabook.backends.pdfium import PdfiumExtractor
 from dabook.core.atomic import StageCommit, write_json
+from dabook.core.datasets import (
+    consolidate_workspace_datasets,
+    detect_code_language,
+    estimate_tokens,
+    is_boilerplate_node,
+    is_valid_code_block,
+)
+from dabook.core.store.db import connect
+from dabook.core.store.settings import load_settings
 from dabook.ir.models import (
     BookNode,
 )
@@ -718,11 +727,47 @@ def _stage_s13_compile(
     s12_dir = _get_latest_stage_dir(work_dir, "s12_semantic")
     nodes = json.loads((s12_dir / "semantic_graph.json").read_text(encoding="utf-8"))["nodes"]
 
-    # Also export directly to book's final datasets directory
     datasets_dir = work_dir / "datasets"
     datasets_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. raw.jsonl
+    # Read live settings if state.db exists
+    filter_boilerplate = True
+    sft_format = "both"
+    merge_all = True
+    workspace = work_dir.parent.parent
+    db_path = workspace / "state.db"
+    if db_path.is_file():
+        try:
+            con = connect(db_path, readonly=True)
+            s = load_settings(con)
+            filter_boilerplate = s.dataset_filter_boilerplate
+            sft_format = s.dataset_sft_format
+            merge_all = s.dataset_merge_all
+            con.close()
+        except Exception:
+            pass
+
+    total_pages = max((n.get("page_idx", 0) for n in nodes), default=0) + 1
+    book_title = work_dir.name
+    source_json = work_dir / "source.json"
+    if source_json.is_file():
+        try:
+            src_data = json.loads(source_json.read_text(encoding="utf-8"))
+            orig = src_data.get("original_path", "")
+            if orig:
+                book_title = Path(orig).stem
+        except Exception:
+            pass
+
+    # 1. Filter nodes for training if boilerplate filtering is enabled
+    if filter_boilerplate:
+        train_nodes = [
+            n for n in nodes if not is_boilerplate_node(n, n.get("page_idx", 0), total_pages)
+        ]
+    else:
+        train_nodes = nodes
+
+    # 2. raw.jsonl (Faithful dump of non-root nodes with text)
     raw_path = datasets_dir / "raw.jsonl"
     with open(raw_path, "w", encoding="utf-8") as f:
         for n in nodes:
@@ -741,101 +786,350 @@ def _stage_s13_compile(
                     + "\n"
                 )
 
-    # 2. rag.jsonl (chunks sized ~300-600 words with metadata)
-    rag_path = datasets_dir / "rag.jsonl"
-    with open(rag_path, "w", encoding="utf-8") as f:
-        current_chunk: list[str] = []
-        current_crumbs: list[str] = []
-        chunk_page = 1
-        chunk_idx = 0
+    # 3. pretrain.jsonl (Document-level continuous Markdown chapters with fenced code)
+    pretrain_path = datasets_dir / "pretrain.jsonl"
+    pretrain_records: list[dict[str, Any]] = []
+    current_doc_title = book_title
+    current_doc_lines: list[str] = []
+    doc_page_start = 1
+    doc_page_end = 1
+    doc_idx = 0
 
-        for n in nodes:
-            if n["node_type"] in ("chapter", "section"):
-                if current_chunk:
-                    f.write(
-                        json.dumps(
-                            {
-                                "chunk_id": f"chunk_{chunk_idx}",
-                                "page": chunk_page,
-                                "breadcrumbs": current_crumbs,
-                                "content": "\n\n".join(current_chunk),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                    chunk_idx += 1
-                    current_chunk = []
-                current_crumbs = [*n.get("breadcrumbs", []), n.get("title", "")]
-                chunk_page = n["page_idx"] + 1
-            elif n["text"].strip():
-                current_chunk.append(n["text"])
-                if sum(len(c.split()) for c in current_chunk) > 400:
-                    f.write(
-                        json.dumps(
-                            {
-                                "chunk_id": f"chunk_{chunk_idx}",
-                                "page": chunk_page,
-                                "breadcrumbs": current_crumbs,
-                                "content": "\n\n".join(current_chunk),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                    chunk_idx += 1
-                    current_chunk = []
+    def _flush_pretrain_doc() -> None:
+        nonlocal doc_idx, current_doc_lines
+        if not current_doc_lines:
+            return
+        doc_text = "\n\n".join(current_doc_lines).strip()
+        words = len(doc_text.split())
+        # Filter out front-matter publisher/dedication documents before page 25 if boilerplate filtering is enabled
+        if filter_boilerplate and doc_page_start < 25:
+            title_lower = current_doc_title.lower()
+            if any(term in title_lower for term in ("author", "credit", "contents at a glance", "executive", "acknowledg")):
+                current_doc_lines = []
+                return
 
-        if current_chunk:
-            f.write(
-                json.dumps(
-                    {
-                        "chunk_id": f"chunk_{chunk_idx}",
-                        "page": chunk_page,
-                        "breadcrumbs": current_crumbs,
-                        "content": "\n\n".join(current_chunk),
-                    },
-                    ensure_ascii=False,
+        if words >= 40:
+            tokens = estimate_tokens(doc_text)
+            rec = {
+                "doc_id": f"doc_{doc_idx:03d}",
+                "book_title": book_title,
+                "chapter_title": current_doc_title,
+                "page_start": doc_page_start,
+                "page_end": doc_page_end,
+                "word_count": words,
+                "char_count": len(doc_text),
+                "token_count": tokens,
+                "text": doc_text,
+            }
+            pretrain_records.append(rec)
+            doc_idx += 1
+        current_doc_lines = []
+
+    for n in train_nodes:
+        ntype = n.get("node_type")
+        text = n.get("text", "").strip()
+        page = n.get("page_idx", 0) + 1
+        if not text:
+            continue
+
+        if ntype == "chapter" or (
+            ntype == "section" and (n.get("title") or "").strip().lower().startswith("chapter")
+        ):
+            _flush_pretrain_doc()
+            current_doc_title = n.get("title") or text.splitlines()[0]
+            doc_page_start = page
+            doc_page_end = page
+            current_doc_lines.append(f"# {current_doc_title}")
+        elif ntype == "section":
+            sec_title = n.get("title") or text.splitlines()[0]
+            crumbs = n.get("breadcrumbs", [])
+            heading_level = "###" if len(crumbs) > 2 else "##"
+            current_doc_lines.append(f"{heading_level} {sec_title}")
+            doc_page_end = max(doc_page_end, page)
+        elif ntype == "code":
+            lang = detect_code_language(text)
+            current_doc_lines.append(f"```{lang}\n{text}\n```")
+            doc_page_end = max(doc_page_end, page)
+        else:
+            current_doc_lines.append(text)
+            doc_page_end = max(doc_page_end, page)
+
+    _flush_pretrain_doc()
+
+    # Fallback if no explicit chapters found: create document from remaining text
+    if not pretrain_records and train_nodes:
+        fallback_lines = []
+        for n in train_nodes:
+            txt = n.get("text", "").strip()
+            if txt:
+                if n.get("node_type") == "code":
+                    fallback_lines.append(f"```{detect_code_language(txt)}\n{txt}\n```")
+                else:
+                    fallback_lines.append(txt)
+        if fallback_lines:
+            ftext = "\n\n".join(fallback_lines)
+            pretrain_records.append({
+                "doc_id": "doc_000",
+                "book_title": book_title,
+                "chapter_title": book_title,
+                "page_start": 1,
+                "page_end": total_pages,
+                "word_count": len(ftext.split()),
+                "char_count": len(ftext),
+                "token_count": estimate_tokens(ftext),
+                "text": ftext,
+            })
+
+    with open(pretrain_path, "w", encoding="utf-8") as f:
+        for pr in pretrain_records:
+            f.write(json.dumps(pr, ensure_ascii=False) + "\n")
+
+    # 4. sft.jsonl (Supervised Fine-Tuning / Instruction pairs)
+    sft_path = datasets_dir / "sft.jsonl"
+    sft_records: list[dict[str, Any]] = []
+    sft_idx = 0
+
+    def _add_sft_pair(
+        instruction: str,
+        input_text: str,
+        output_text: str,
+        category: str,
+        source_page: int,
+        breadcrumbs: list[str],
+    ) -> None:
+        nonlocal sft_idx
+        out_clean = output_text.strip()
+        if not out_clean or len(out_clean.split()) < 15:
+            return
+        sft_idx += 1
+        rec: dict[str, Any] = {
+            "id": f"sft_{sft_idx:04d}",
+            "category": category,
+            "source_page": source_page,
+            "breadcrumbs": breadcrumbs,
+        }
+        if sft_format in ("alpaca", "both"):
+            rec["instruction"] = instruction
+            rec["input"] = input_text
+            rec["output"] = out_clean
+        if sft_format in ("chatml", "both"):
+            user_msg = f"{instruction}\n\n{input_text}".strip() if input_text else instruction
+            rec["messages"] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert systems engineer and reverse engineering specialist. "
+                        "Provide detailed, technically rigorous explanations with code or disassembly where appropriate."
+                    ),
+                },
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": out_clean},
+            ]
+        sft_records.append(rec)
+
+    for i, n in enumerate(train_nodes):
+        ntype = n.get("node_type")
+        text = n.get("text", "").strip()
+        crumbs = n.get("breadcrumbs", [])
+        page = n.get("page_idx", 0) + 1
+
+        # A. Concept Q&A from section headings
+        if ntype == "section" and n.get("title"):
+            title = n["title"].strip()
+            title_lower = title.lower()
+
+            # Skip non-headings, figure labels, symbols, and front-matter author/credit titles
+            is_valid_heading = (
+                bool(re.search(r"[a-zA-Z]", title))
+                and not title_lower.startswith(("figure", "table", "listing", "chart", "diagram", "note", "warning"))
+                and title not in ("–", "—", "-", "*", "...")
+                and len(title.split()) <= 8
+                and len(title) <= 60
+                and not (
+                    page < 29
+                    and any(
+                        term in title_lower
+                        for term in (
+                            "author",
+                            "credit",
+                            "editor",
+                            "acknowledg",
+                            "contents",
+                            "engineering",
+                            "practical reverse",
+                            "glance",
+                        )
+                    )
                 )
-                + "\n"
             )
 
-    # 3. code.jsonl (all code & assembly blocks)
+            if is_valid_heading:
+                # Gather consecutive explanation prose
+                sec_prose: list[str] = []
+                for next_node in train_nodes[i + 1 : i + 8]:
+                    if next_node.get("node_type") in ("chapter", "section"):
+                        break
+                    if next_node.get("node_type") == "code":
+                        lang = detect_code_language(next_node["text"])
+                        sec_prose.append(f"```{lang}\n{next_node['text']}\n```")
+                    elif next_node.get("text", "").strip():
+                        sec_prose.append(next_node["text"].strip())
+                explanation = "\n\n".join(sec_prose)
+                if len(explanation.split()) >= 30:
+                    crumb_str = f" in {crumbs[-1]}" if crumbs else ""
+                    inst = f"Explain the architecture and technical mechanics of {title}{crumb_str} in detail."
+                    _add_sft_pair(inst, "", explanation, "concept_qa", page, crumbs)
+
+        # B. Code Walkthrough / Disassembly analysis
+        elif ntype == "code" and is_valid_code_block(text):
+            ctx_prose: list[str] = []
+            if i > 0 and train_nodes[i - 1].get("node_type") not in ("chapter", "section", "code"):
+                ctx_prose.append(train_nodes[i - 1].get("text", "").strip())
+            if i + 1 < len(train_nodes) and train_nodes[i + 1].get("node_type") not in (
+                "chapter",
+                "section",
+                "code",
+            ):
+                ctx_prose.append(train_nodes[i + 1].get("text", "").strip())
+            explanation = "\n\n".join(ctx_prose)
+            if len(explanation.split()) >= 15:
+                lang = detect_code_language(text)
+                inst = "Analyze the following code/disassembly snippet and explain what each instruction or construct does:"
+                input_code = f"```{lang}\n{text}\n```"
+                _add_sft_pair(inst, input_code, explanation, "code_walkthrough", page, crumbs)
+
+        # C. Exercises / Review Questions
+        title_lower = (n.get("title") or "").lower()
+        if "exercise" in title_lower or "review question" in title_lower:
+            items = re.split(r"\n(?=\d+\.\s+)", text)
+            for item in items:
+                item_clean = item.strip()
+                if re.match(r"^\d+\.\s+", item_clean) and len(item_clean.split()) >= 6:
+                    inst = "Solve or answer the following technical problem:"
+                    _add_sft_pair(
+                        inst,
+                        item_clean,
+                        f"Technical analysis and solution:\n\n{item_clean}",
+                        "exercise",
+                        page,
+                        crumbs,
+                    )
+
+    with open(sft_path, "w", encoding="utf-8") as f:
+        for sr in sft_records:
+            f.write(json.dumps(sr, ensure_ascii=False) + "\n")
+
+    # 5. code.jsonl (Clean multi-line code & disassembly with surrounding context)
     code_path = datasets_dir / "code.jsonl"
-    code_nodes = [n for n in nodes if n["node_type"] == "code"]
+    code_records: list[dict[str, Any]] = []
+    code_idx = 0
+
+    for i, n in enumerate(nodes):
+        if n.get("node_type") == "code":
+            code_text = n.get("text", "").strip()
+            if not is_valid_code_block(code_text):
+                continue
+            code_idx += 1
+            lang = detect_code_language(code_text)
+            ctx_parts: list[str] = []
+            if i > 0 and nodes[i - 1].get("text", "").strip():
+                ctx_parts.append(nodes[i - 1]["text"].strip())
+            if i + 1 < len(nodes) and nodes[i + 1].get("text", "").strip():
+                ctx_parts.append(nodes[i + 1]["text"].strip())
+            context = "\n\n".join(ctx_parts)
+
+            code_records.append({
+                "code_id": f"code_{code_idx:04d}",
+                "page": n.get("page_idx", 0) + 1,
+                "language": lang,
+                "breadcrumbs": n.get("breadcrumbs", []),
+                "surrounding_context": context,
+                "code": code_text,
+                "line_count": len(code_text.splitlines()),
+            })
+
     with open(code_path, "w", encoding="utf-8") as f:
-        for c in code_nodes:
-            f.write(
-                json.dumps(
-                    {
-                        "code_id": c["node_id"],
-                        "page": c["page_idx"] + 1,
-                        "language": c.get("metadata", {}).get("language", "asm"),
-                        "breadcrumbs": c.get("breadcrumbs", []),
-                        "code": c["text"],
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+        for cr in code_records:
+            f.write(json.dumps(cr, ensure_ascii=False) + "\n")
+
+    # 6. rag.jsonl (Hierarchical chunks ~300-600 words with breadcrumbs)
+    rag_path = datasets_dir / "rag.jsonl"
+    rag_records: list[dict[str, Any]] = []
+    current_chunk: list[str] = []
+    current_crumbs: list[str] = []
+    chunk_page = 1
+    chunk_idx = 0
+
+    for n in train_nodes:
+        if n["node_type"] in ("chapter", "section"):
+            if current_chunk:
+                rag_records.append({
+                    "chunk_id": f"chunk_{chunk_idx:04d}",
+                    "page": chunk_page,
+                    "breadcrumbs": current_crumbs,
+                    "content": "\n\n".join(current_chunk),
+                })
+                chunk_idx += 1
+                current_chunk = []
+            current_crumbs = [*n.get("breadcrumbs", []), n.get("title", "")]
+            chunk_page = n["page_idx"] + 1
+        elif n["text"].strip():
+            current_chunk.append(n["text"])
+            if sum(len(c.split()) for c in current_chunk) > 400:
+                rag_records.append({
+                    "chunk_id": f"chunk_{chunk_idx:04d}",
+                    "page": chunk_page,
+                    "breadcrumbs": current_crumbs,
+                    "content": "\n\n".join(current_chunk),
+                })
+                chunk_idx += 1
+                current_chunk = []
+
+    if current_chunk:
+        rag_records.append({
+            "chunk_id": f"chunk_{chunk_idx:04d}",
+            "page": chunk_page,
+            "breadcrumbs": current_crumbs,
+            "content": "\n\n".join(current_chunk),
+        })
+        chunk_idx += 1
+
+    with open(rag_path, "w", encoding="utf-8") as f:
+        for rr in rag_records:
+            f.write(json.dumps(rr, ensure_ascii=False) + "\n")
 
     # Summary manifest
     summary = {
         "compiled_at": time.time(),
         "total_nodes": len(nodes),
+        "training_nodes": len(train_nodes),
         "raw_lines": len(nodes),
-        "rag_chunks": chunk_idx + 1,
-        "code_blocks": len(code_nodes),
+        "pretrain_docs": len(pretrain_records),
+        "sft_pairs": len(sft_records),
+        "code_blocks": len(code_records),
+        "rag_chunks": len(rag_records),
         "datasets": {
-            "raw": str(raw_path),
-            "rag": str(rag_path),
+            "pretrain": str(pretrain_path),
+            "sft": str(sft_path),
             "code": str(code_path),
+            "rag": str(rag_path),
+            "raw": str(raw_path),
         },
     }
     write_json(out_dir / "summary.json", summary)
     write_json(datasets_dir / "manifest.json", summary)
+
+    # Consolidate workspace-wide datasets
+    if merge_all:
+        try:
+            consolidate_workspace_datasets(workspace)
+        except Exception as exc:
+            logger.warning("Auto-consolidation warning: %s", exc)
+
     progress_fn(
-        1, f"Datasets compiled: raw, rag ({chunk_idx + 1} chunks), code ({len(code_nodes)} blocks)."
+        1,
+        f"Datasets compiled: {len(pretrain_records)} pretrain chapters, {len(sft_records)} SFT pairs, "
+        f"{len(code_records)} code blocks, {len(rag_records)} RAG chunks.",
     )
 
 

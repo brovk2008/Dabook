@@ -46,6 +46,11 @@ class LiveSettings:
     quality_good: float = 0.85
     quality_review: float = 0.70
 
+    # Dataset compilation settings
+    dataset_merge_all: bool = True
+    dataset_filter_boilerplate: bool = True
+    dataset_sft_format: str = "both"
+
     def free_book_slots(self, active_books: int) -> int:
         return max(0, self.book_concurrency - active_books)
 
@@ -83,6 +88,9 @@ def load_settings(con: sqlite3.Connection) -> LiveSettings:
         quality_verified=f("quality.verified", 0.95),
         quality_good=f("quality.good", 0.85),
         quality_review=f("quality.review", 0.70),
+        dataset_merge_all=b("dataset.merge_all", True),
+        dataset_filter_boilerplate=b("dataset.filter_boilerplate", True),
+        dataset_sft_format=str(kv.get("dataset.sft_format", "both")),
     )
 
 

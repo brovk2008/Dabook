@@ -15,6 +15,11 @@ let state = {
   throughputHistory: [],
   pendingHistory: [],
   swimlaneWorkers: {},
+  datasets: [],
+  selectedDataset: null,
+  datasetOffset: 0,
+  datasetLimit: 10,
+  datasetView: 'rendered',
 };
 
 const MAX_LOGS = 500;
@@ -69,6 +74,7 @@ function switchPanel(name) {
   document.querySelector(`[data-panel="${name}"]`).classList.add('active');
 
   if (name === 'books') loadBooks();
+  if (name === 'datasets') loadDatasets();
   if (name === 'settings') loadSettings();
 }
 
@@ -418,6 +424,9 @@ const SETTING_LABELS = {
   'min_free_gb':       { label: 'Min Free Disk (GB)', live: true  },
   'shard_pages':       { label: 'Pages per Shard',    live: true  },
   'retry.max_attempts':{ label: 'Max Retry Attempts', live: true  },
+  'dataset.merge_all': { label: 'Consolidate All Books (all_*.jsonl)', live: true },
+  'dataset.filter_boilerplate': { label: 'Filter Boilerplate & Index', live: true },
+  'dataset.sft_format':{ label: 'SFT Format (both / chatml / alpaca)', live: true },
   'ui.port':           { label: 'Dashboard Port',     live: false },
 };
 
@@ -504,6 +513,338 @@ function copyDiagnostics() {
   navigator.clipboard.writeText(text).then(() => showAlert('Diagnostics copied to clipboard'));
 }
 
+// ─── Datasets Panel ───────────────────────────────────────
+async function loadDatasets() {
+  try {
+    const res = await fetch(`${API}/api/datasets`);
+    const list = await res.json();
+    state.datasets = list || [];
+    renderDatasetCards(state.datasets);
+    populateDatasetSelect(state.datasets);
+
+    if (state.datasets.length > 0) {
+      if (!state.selectedDataset || !state.datasets.some(d => d.rel_path === state.selectedDataset.rel_path)) {
+        const pref = state.datasets.find(d => d.rel_path === 'compiled/all_pretrain.jsonl')
+          || state.datasets.find(d => d.rel_path === 'compiled/all_sft.jsonl')
+          || state.datasets[0];
+        state.selectedDataset = pref;
+      }
+      const sel = document.getElementById('dataset-select');
+      if (sel) sel.value = state.selectedDataset.rel_path;
+      loadDatasetPreview();
+    } else {
+      const container = document.getElementById('dataset-preview-content');
+      if (container) {
+        container.innerHTML = '<div class="empty-preview">No datasets compiled yet. Run processing to generate datasets.</div>';
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load datasets:', err);
+  }
+}
+
+function renderDatasetCards(datasets) {
+  const container = document.getElementById('dataset-cards-summary');
+  if (!container) return;
+
+  const typeMeta = {
+    'pretrain': { label: 'Pre-training (CLM)', icon: '📖', badge: 'Chapters', color: 'var(--blue)' },
+    'sft':      { label: 'Fine-Tuning (SFT)',  icon: '💬', badge: 'ChatML & Alpaca', color: 'var(--purple)' },
+    'code':     { label: 'Code & Asm',         icon: '💻', badge: 'Multi-line', color: 'var(--green)' },
+    'rag':      { label: 'RAG Vectors',        icon: '🔍', badge: 'Breadcrumbs', color: 'var(--cyan)' },
+    'raw':      { label: 'Raw Graph',          icon: '📦', badge: 'Faithful', color: 'var(--orange)' },
+  };
+
+  const byType = {};
+  datasets.forEach(d => {
+    if (!byType[d.type] || d.scope === 'workspace') {
+      byType[d.type] = d;
+    }
+  });
+
+  const cardsHtml = Object.keys(typeMeta).map(type => {
+    const meta = typeMeta[type];
+    const ds = byType[type];
+    const records = ds ? ds.records.toLocaleString() : '0';
+    const size = ds ? fmtMB(ds.size_bytes / (1024 * 1024)) : '0 MB';
+    const isReady = Boolean(ds && ds.records > 0);
+    const scopeLabel = ds?.scope === 'workspace' ? 'Consolidated Master' : (ds ? esc(ds.scope_label) : 'Pending');
+
+    return `<div class="dataset-summary-card ${isReady ? 'ready' : ''}" onclick="selectDatasetByPath('${ds ? esc(ds.rel_path) : ''}')">
+      <div class="dataset-card-top">
+        <span class="dataset-card-icon">${meta.icon}</span>
+        <span class="dataset-card-badge" style="border-color:${meta.color};color:${meta.color}">${meta.badge}</span>
+      </div>
+      <div class="dataset-card-title">${meta.label}</div>
+      <div class="dataset-card-scope">${scopeLabel}</div>
+      <div class="dataset-card-stat">
+        <span class="dataset-stat-num">${records}</span>
+        <span class="dataset-stat-label">records (${size})</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = cardsHtml;
+}
+
+function populateDatasetSelect(datasets) {
+  const sel = document.getElementById('dataset-select');
+  if (!sel) return;
+
+  const consolidated = datasets.filter(d => d.scope === 'workspace');
+  const perBook = datasets.filter(d => d.scope !== 'workspace');
+
+  let html = '';
+  if (consolidated.length > 0) {
+    html += '<optgroup label="🌟 Consolidated Master Datasets">';
+    consolidated.forEach(d => {
+      html += `<option value="${esc(d.rel_path)}">${esc(d.name)} (${d.records.toLocaleString()} rows · ${fmtMB(d.size_bytes / (1024*1024))})</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (perBook.length > 0) {
+    html += '<optgroup label="📚 Per-Book Datasets">';
+    perBook.forEach(d => {
+      html += `<option value="${esc(d.rel_path)}">[${esc(d.scope_label)}] ${esc(d.name)} (${d.records.toLocaleString()} rows)</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  sel.innerHTML = html;
+}
+
+function onSelectDataset() {
+  const sel = document.getElementById('dataset-select');
+  if (!sel) return;
+  selectDatasetByPath(sel.value);
+}
+
+function selectDatasetByPath(path) {
+  if (!path) return;
+  const match = state.datasets.find(d => d.rel_path === path);
+  if (match) {
+    state.selectedDataset = match;
+    state.datasetOffset = 0;
+    const sel = document.getElementById('dataset-select');
+    if (sel) sel.value = path;
+    loadDatasetPreview();
+  }
+}
+
+function setDatasetView(view) {
+  state.datasetView = view;
+  document.getElementById('view-toggle-rendered')?.classList.toggle('active', view === 'rendered');
+  document.getElementById('view-toggle-json')?.classList.toggle('active', view === 'json');
+  loadDatasetPreview();
+}
+
+async function loadDatasetPreview() {
+  if (!state.selectedDataset) return;
+  const container = document.getElementById('dataset-preview-content');
+  if (!container) return;
+
+  container.innerHTML = '<div class="loading-preview">Loading preview records...</div>';
+
+  try {
+    const res = await fetch(`${API}/api/datasets/preview?file=${encodeURIComponent(state.selectedDataset.rel_path)}&offset=${state.datasetOffset}&limit=${state.datasetLimit}`);
+    const data = await res.json();
+
+    const total = data.total_records || 0;
+    const start = total === 0 ? 0 : state.datasetOffset + 1;
+    const end = Math.min(state.datasetOffset + state.datasetLimit, total);
+    const pageInfo = document.getElementById('dataset-page-info');
+    if (pageInfo) pageInfo.textContent = `${start.toLocaleString()} - ${end.toLocaleString()} of ${total.toLocaleString()}`;
+
+    const prevBtn = document.getElementById('btn-prev-page');
+    const nextBtn = document.getElementById('btn-next-page');
+    if (prevBtn) prevBtn.disabled = (state.datasetOffset <= 0);
+    if (nextBtn) nextBtn.disabled = (end >= total);
+
+    renderDatasetPreview(data.records || [], state.selectedDataset.type);
+  } catch (err) {
+    container.innerHTML = `<div class="empty-preview" style="color:var(--red)">Failed to load preview: ${esc(err.message)}</div>`;
+  }
+}
+
+function prevDatasetPage() {
+  if (state.datasetOffset > 0) {
+    state.datasetOffset = Math.max(0, state.datasetOffset - state.datasetLimit);
+    loadDatasetPreview();
+  }
+}
+
+function nextDatasetPage() {
+  state.datasetOffset += state.datasetLimit;
+  loadDatasetPreview();
+}
+
+function renderDatasetPreview(records, dtype) {
+  const container = document.getElementById('dataset-preview-content');
+  if (!container) return;
+
+  if (!records.length) {
+    container.innerHTML = '<div class="empty-preview">No records in this page</div>';
+    return;
+  }
+
+  if (state.datasetView === 'json') {
+    container.innerHTML = records.map((r, i) => {
+      const idx = state.datasetOffset + i + 1;
+      const jsonStr = JSON.stringify(r, null, 2);
+      return `<div class="preview-item-json">
+        <div class="preview-item-header">
+          <span class="preview-item-idx">#${idx}</span>
+          <button class="btn btn-ghost btn-sm" onclick="copyDatasetRaw(this)">📋 Copy JSON</button>
+        </div>
+        <pre class="json-code-block"><code>${esc(jsonStr)}</code></pre>
+      </div>`;
+    }).join('');
+    return;
+  }
+
+  container.innerHTML = records.map((r, i) => {
+    const idx = state.datasetOffset + i + 1;
+    if (dtype === 'sft' || r.messages || r.instruction) {
+      return renderSftRecord(r, idx);
+    }
+    if (dtype === 'pretrain' || r.doc_id) {
+      return renderPretrainRecord(r, idx);
+    }
+    if (dtype === 'code' || r.code) {
+      return renderCodeRecord(r, idx);
+    }
+    return renderGenericRecord(r, idx);
+  }).join('');
+}
+
+function renderSftRecord(r, idx) {
+  const category = r.category || 'instruction';
+  const page = r.source_page ? `Page ${r.source_page}` : '';
+  const breadcrumbs = (r.breadcrumbs || []).join(' › ');
+
+  let msgsHtml = '';
+  if (r.messages && Array.isArray(r.messages)) {
+    msgsHtml = r.messages.map(m => {
+      const role = m.role || 'user';
+      return `<div class="chatml-msg chatml-${esc(role)}">
+        <div class="chatml-role-badge">${esc(role.toUpperCase())}</div>
+        <div class="chatml-body">${esc(m.content)}</div>
+      </div>`;
+    }).join('');
+  } else {
+    msgsHtml = `
+      <div class="chatml-msg chatml-user">
+        <div class="chatml-role-badge">USER (INSTRUCTION)</div>
+        <div class="chatml-body"><strong>${esc(r.instruction || '')}</strong>${r.input ? `<div style="margin-top:6px">${esc(r.input)}</div>` : ''}</div>
+      </div>
+      <div class="chatml-msg chatml-assistant">
+        <div class="chatml-role-badge">ASSISTANT</div>
+        <div class="chatml-body">${esc(r.output || '')}</div>
+      </div>
+    `;
+  }
+
+  return `<div class="preview-item-card">
+    <div class="preview-item-header">
+      <div class="preview-header-left">
+        <span class="preview-item-idx">#${idx}</span>
+        <span class="stage-chip">${esc(category)}</span>
+        <span class="crumb-chip">${esc(breadcrumbs || page)}</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="copyDatasetRaw(this)">📋 Copy Record</button>
+    </div>
+    <div class="chatml-thread">${msgsHtml}</div>
+  </div>`;
+}
+
+function renderPretrainRecord(r, idx) {
+  const title = r.chapter_title || r.title || 'Chapter';
+  const words = (r.word_count || 0).toLocaleString();
+  const tokens = (r.token_count || 0).toLocaleString();
+  const pages = `Pages ${r.page_start || 1} - ${r.page_end || 1}`;
+
+  return `<div class="preview-item-card">
+    <div class="preview-item-header">
+      <div class="preview-header-left">
+        <span class="preview-item-idx">#${idx}</span>
+        <span class="chip chip-active">${esc(title)}</span>
+        <span class="crumb-chip">${pages} · ${words} words · ~${tokens} tokens</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="copyDatasetRaw(this)">📋 Copy Record</button>
+    </div>
+    <div class="pretrain-doc-body"><pre class="doc-markdown-pre"><code>${esc(r.text || '')}</code></pre></div>
+  </div>`;
+}
+
+function renderCodeRecord(r, idx) {
+  const lang = r.language || 'asm';
+  const page = r.page ? `Page ${r.page}` : '';
+  const lines = r.line_count ? `${r.line_count} lines` : '';
+  const breadcrumbs = (r.breadcrumbs || []).join(' › ');
+
+  return `<div class="preview-item-card">
+    <div class="preview-item-header">
+      <div class="preview-header-left">
+        <span class="preview-item-idx">#${idx}</span>
+        <span class="stage-chip">${esc(lang)}</span>
+        <span class="crumb-chip">${esc(breadcrumbs || page)} · ${lines}</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="copyDatasetRaw(this)">📋 Copy Record</button>
+    </div>
+    ${r.surrounding_context ? `<div class="code-context-banner"><span class="context-label">Context:</span> ${esc(r.surrounding_context)}</div>` : ''}
+    <pre class="code-train-pre"><code class="language-${esc(lang)}">${esc(r.code || '')}</code></pre>
+  </div>`;
+}
+
+function renderGenericRecord(r, idx) {
+  const page = r.page ? `Page ${r.page}` : '';
+  const crumbs = (r.breadcrumbs || []).join(' › ');
+  const content = r.content || r.text || JSON.stringify(r);
+
+  return `<div class="preview-item-card">
+    <div class="preview-item-header">
+      <div class="preview-header-left">
+        <span class="preview-item-idx">#${idx}</span>
+        <span class="crumb-chip">${esc(crumbs || page)}</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="copyDatasetRaw(this)">📋 Copy Record</button>
+    </div>
+    <div class="generic-body">${esc(content)}</div>
+  </div>`;
+}
+
+async function consolidateDatasets() {
+  try {
+    showAlert('Consolidating datasets across all books in workspace...');
+    const res = await fetch(`${API}/api/datasets/consolidate`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${getToken()}` },
+    });
+    const result = await res.json();
+    if (result.ok) {
+      showAlert('All book datasets consolidated successfully into workspace master files!');
+      loadDatasets();
+    } else {
+      showAlert(`Consolidation failed: ${result.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    showAlert(`Consolidation request failed: ${err.message}`);
+  }
+}
+
+function copyDatasetRaw(btn) {
+  const card = btn.closest('.preview-item-card') || btn.closest('.preview-item-json');
+  const code = card ? (card.querySelector('code')?.innerText || '') : '';
+  if (code) {
+    navigator.clipboard.writeText(code).then(() => {
+      const orig = btn.innerText;
+      btn.innerText = '✓ Copied';
+      setTimeout(() => { btn.innerText = orig; }, 2000);
+    });
+  }
+}
+
 // ─── Alerts ───────────────────────────────────────────────
 let alertTimeout;
 function showAlert(msg) {
@@ -562,3 +903,11 @@ window.saveSettings = saveSettings;
 window.filterLogs = filterLogs;
 window.clearLogs = clearLogs;
 window.copyDiagnostics = copyDiagnostics;
+window.loadDatasets = loadDatasets;
+window.onSelectDataset = onSelectDataset;
+window.selectDatasetByPath = selectDatasetByPath;
+window.setDatasetView = setDatasetView;
+window.prevDatasetPage = prevDatasetPage;
+window.nextDatasetPage = nextDatasetPage;
+window.consolidateDatasets = consolidateDatasets;
+window.copyDatasetRaw = copyDatasetRaw;
