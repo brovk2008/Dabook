@@ -53,6 +53,8 @@ dmypy.json
 
 # DaBook Workspace runtime & temporary artifacts
 dabook_workspace/
+test_run_workspace/
+*_workspace/
 *.db-wal
 *.db-shm
 *.partial/

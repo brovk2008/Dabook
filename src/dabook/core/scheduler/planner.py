@@ -88,7 +88,7 @@ STAGE_DAG: list[StageSpec] = [
         ["quality_verified", "quality_good", "quality_review"],
         deps=["s10_clean"],
     ),
-    StageSpec("s12_semantic", 12, "llm", "0.1.0", ["assist_provider"], deps=["s11_validate"]),
+    StageSpec("s12_semantic", 12, "cpu", "0.1.0", ["assist_provider"], deps=["s11_validate"]),
     StageSpec(
         "s13_compile",
         13,
@@ -146,6 +146,11 @@ def plan_book(
 
             # Compute stage_key
             affecting = {k: params.get(k) for k in spec.affects_output}
+            if spec.sharded:
+                affecting["shard_idx"] = shard_idx
+                affecting["page_start"] = page_start
+                affecting["page_end"] = page_end
+
             key = compute_stage_key(
                 spec.name,
                 spec.impl_version,

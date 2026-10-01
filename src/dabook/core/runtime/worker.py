@@ -295,20 +295,35 @@ def worker_main(
             t0 = time.time()
             try:
                 book_work_dir = workspace / "books" / task["stage_key"][:12]
-                # Find actual book dir
+                pdf_path = None
+                # Find actual book dir and source path
                 book_rows = con.execute(
-                    "SELECT sha256 FROM books WHERE id=?", (book_id,)
+                    "SELECT sha256, path FROM books WHERE id=?", (book_id,)
                 ).fetchone()
                 if book_rows:
                     book_work_dir = workspace / "books" / book_rows["sha256"][:12]
+                    pdf_candidate = Path(book_rows["path"])
+                    if pdf_candidate.is_file():
+                        pdf_path = pdf_candidate
 
-                result = _run_fake_stage(
-                    task,
-                    work_dir=book_work_dir,
-                    progress_fn=hb_thread.progress,
-                    should_abort=lambda: stop.hard,
-                    eta=eta,
-                )
+                if pdf_path is not None:
+                    from dabook.stages.runner import run_stage
+
+                    result = run_stage(
+                        task,
+                        work_dir=book_work_dir,
+                        pdf_path=pdf_path,
+                        progress_fn=hb_thread.progress,
+                        should_abort=lambda: stop.hard,
+                    )
+                else:
+                    result = _run_fake_stage(
+                        task,
+                        work_dir=book_work_dir,
+                        progress_fn=hb_thread.progress,
+                        should_abort=lambda: stop.hard,
+                        eta=eta,
+                    )
 
                 duration_ms = int((time.time() - t0) * 1000)
                 mark_done(
