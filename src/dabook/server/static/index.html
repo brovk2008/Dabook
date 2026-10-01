@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DABOOK — Control Room</title>
+  <meta name="description" content="DABOOK live processing dashboard — monitor book processing, resource usage, and export progress in real time.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-icon">◈</span>
+          <span class="logo-text">DABOOK</span>
+          <span class="logo-sub">Control Room</span>
+        </div>
+        <div id="overall-progress-wrap">
+          <div class="progress-bar-outer" title="Overall progress">
+            <div id="overall-progress-bar" class="progress-bar-inner" style="width:0%"></div>
+          </div>
+          <span id="overall-pct">0%</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div id="eta-badge" class="stat-badge">ETA: <span id="eta-val">—</span></div>
+        <div id="status-badge" class="stat-badge status-running">Running</div>
+        <button id="pause-btn" class="btn btn-ghost" onclick="togglePause()">⏸ Pause</button>
+      </div>
+    </header>
+
+    <!-- Alert banner -->
+    <div id="alert-banner" class="alert-banner" style="display:none"></div>
+
+    <!-- Nav -->
+    <nav id="nav">
+      <button class="nav-tab active" data-panel="overview" onclick="switchPanel('overview')">Overview</button>
+      <button class="nav-tab" data-panel="books" onclick="switchPanel('books')">Books</button>
+      <button class="nav-tab" data-panel="settings" onclick="switchPanel('settings')">Settings</button>
+      <button class="nav-tab" data-panel="logs" onclick="switchPanel('logs')">Logs</button>
+      <div id="stale-indicator" class="stale-indicator" style="display:none">● Reconnecting…</div>
+    </nav>
+
+    <!-- Panels -->
+    <main id="panels">
+
+      <!-- ═══ Overview ═══ -->
+      <section id="panel-overview" class="panel active">
+        <div class="panel-grid">
+
+          <!-- Book / task counters -->
+          <div class="card span-2" id="card-counters">
+            <h3 class="card-title">Progress</h3>
+            <div class="counters-row">
+              <div class="counter-block">
+                <div class="counter-val" id="c-books-done">0</div>
+                <div class="counter-label">Books Done</div>
+              </div>
+              <div class="counter-block">
+                <div class="counter-val" id="c-books-active">0</div>
+                <div class="counter-label">Processing</div>
+              </div>
+              <div class="counter-block">
+                <div class="counter-val" id="c-books-queued">0</div>
+                <div class="counter-label">Queued</div>
+              </div>
+              <div class="counter-block accent-red">
+                <div class="counter-val" id="c-books-failed">0</div>
+                <div class="counter-label">Failed</div>
+              </div>
+              <div class="counter-sep"></div>
+              <div class="counter-block accent-green">
+                <div class="counter-val" id="c-tasks-done">0</div>
+                <div class="counter-label">Tasks Done</div>
+              </div>
+              <div class="counter-block">
+                <div class="counter-val" id="c-tasks-running">0</div>
+                <div class="counter-label">Running</div>
+              </div>
+              <div class="counter-block">
+                <div class="counter-val" id="c-tasks-pending">0</div>
+                <div class="counter-label">Pending</div>
+              </div>
+              <div class="counter-block accent-orange">
+                <div class="counter-val" id="c-tasks-dead">0</div>
+                <div class="counter-label">Dead</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Now processing -->
+          <div class="card span-4" id="card-now">
+            <h3 class="card-title">Now Processing</h3>
+            <table class="data-table" id="running-table">
+              <thead>
+                <tr>
+                  <th>Worker</th><th>Book</th><th>Stage</th><th>Shard</th>
+                  <th>Progress</th><th>Elapsed</th><th>Sub-step</th>
+                </tr>
+              </thead>
+              <tbody id="running-tbody">
+                <tr class="empty-row"><td colspan="7">No tasks running</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- CPU/RAM -->
+          <div class="card span-2" id="card-system">
+            <h3 class="card-title">System Resources</h3>
+            <div class="resource-row">
+              <label>CPU</label>
+              <div class="resource-bar-wrap">
+                <div class="resource-bar" id="cpu-bar"></div>
+              </div>
+              <span id="cpu-val">—</span>
+            </div>
+            <div class="resource-row">
+              <label>RAM</label>
+              <div class="resource-bar-wrap">
+                <div class="resource-bar" id="ram-bar"></div>
+              </div>
+              <span id="ram-val">—</span>
+            </div>
+            <div class="resource-row">
+              <label>Disk Free</label>
+              <div class="resource-bar-wrap">
+                <div class="resource-bar resource-bar-disk" id="disk-bar"></div>
+              </div>
+              <span id="disk-val">—</span>
+            </div>
+            <div id="gpu-section"></div>
+          </div>
+
+          <!-- Throughput chart -->
+          <div class="card span-2" id="card-throughput">
+            <h3 class="card-title">Pages / min</h3>
+            <canvas id="chart-throughput" height="120"></canvas>
+          </div>
+
+          <!-- Burn-down chart -->
+          <div class="card span-2" id="card-burndown">
+            <h3 class="card-title">Task Burn-down</h3>
+            <canvas id="chart-burndown" height="120"></canvas>
+          </div>
+
+          <!-- Worker swimlane -->
+          <div class="card span-4" id="card-swimlane">
+            <h3 class="card-title">Worker Swimlane</h3>
+            <div id="swimlane-container"></div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ═══ Books ═══ -->
+      <section id="panel-books" class="panel">
+        <div class="books-toolbar">
+          <button class="btn btn-primary" onclick="showUpload()">＋ Add Books</button>
+          <input id="books-search" type="text" placeholder="Filter books…" class="search-input" oninput="filterBooks()">
+        </div>
+        <div id="books-list"></div>
+        <div id="upload-drop" class="upload-drop" style="display:none">
+          <div class="upload-inner">
+            <div class="upload-icon">📄</div>
+            <p>Drop PDF files here or <label class="link" for="file-input">browse</label></p>
+            <input id="file-input" type="file" accept=".pdf" multiple style="display:none" onchange="handleFileUpload(event)">
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ Settings ═══ -->
+      <section id="panel-settings" class="panel">
+        <div class="settings-grid" id="settings-form"></div>
+        <div class="settings-actions">
+          <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+          <button class="btn btn-ghost" onclick="loadSettings()">↺ Reset</button>
+        </div>
+      </section>
+
+      <!-- ═══ Logs ═══ -->
+      <section id="panel-logs" class="panel">
+        <div class="logs-toolbar">
+          <select id="log-level-filter" onchange="filterLogs()">
+            <option value="">All Levels</option>
+            <option value="ERROR">Error</option>
+            <option value="WARNING">Warning</option>
+            <option value="INFO">Info</option>
+          </select>
+          <button class="btn btn-ghost" onclick="clearLogs()">✕ Clear</button>
+          <button class="btn btn-ghost" onclick="copyDiagnostics()">📋 Copy Diagnostics</button>
+        </div>
+        <div id="log-tail"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Vendored Chart.js (will be fetched once; for offline use, download and serve locally) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+name: 🐛 Bug Report
+description: File a bug report to help us improve DABOOK
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue! Please check if a similar issue already exists before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: DABOOK Version
+      description: What version of DABOOK are you using? (Run `dabook --version` or check pyproject.toml)
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: os_python
+    attributes:
+      label: Operating System & Python Version
+      description: e.g. Ubuntu 22.04 / Windows 11, Python 3.11.9
+      placeholder: "Windows 11, Python 3.11.9"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this behavior? Please include exact CLI commands or Python code snippets.
+      placeholder: |
+        1. Run `dabook run sample.pdf`
+        2. Worker encounters error at stage `s02_extract`
+        3. See error in logs...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs & Output
+      description: Paste any stack traces or output from `dabook doctor` or `./dabook_workspace/logs/`.
+      render: shell
