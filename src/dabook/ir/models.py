@@ -39,6 +39,7 @@ class TextLine(BaseModel):
     bbox: list[float]
     font_size: float = 10.0
     is_bold: bool = False
+    is_mono: bool = False
 
 
 class RawBlock(BaseModel):
@@ -58,6 +59,7 @@ class RawBlock(BaseModel):
     font_size: float = 10.0
     is_bold: bool = False
     is_italic: bool = False
+    is_mono: bool = False
     lines: list[TextLine] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

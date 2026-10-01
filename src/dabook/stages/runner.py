@@ -208,6 +208,8 @@ def _stage_s03_merge(
 # ---------------------------------------------------------------------------
 # Stage S04: Furniture Removal (Headers & Footers)
 # ---------------------------------------------------------------------------
+# Stage S04: Furniture Removal (Headers, Footers, Watermarks)
+# ---------------------------------------------------------------------------
 def _stage_s04_furniture(
     task: dict[str, Any],
     work_dir: Path,
@@ -222,56 +224,51 @@ def _stage_s04_furniture(
 
     pages_data = json.loads((s03_dir / "merged_pages.json").read_text(encoding="utf-8"))["pages"]
 
-    # Count occurrences of top and bottom lines across pages
-    top_patterns: dict[str, int] = {}
-    bottom_patterns: dict[str, int] = {}
-
+    # Frequency analysis across margin bands (top 6% and bottom 6%)
+    margin_patterns: dict[str, int] = {}
     for page in pages_data:
-        blocks = page.get("blocks", [])
-        if not blocks:
-            continue
-        # Check first block (top) and last block (bottom)
-        top_text = blocks[0]["raw_text"].strip()
-        bot_text = blocks[-1]["raw_text"].strip()
-        top_patterns[top_text] = top_patterns.get(top_text, 0) + 1
-        bottom_patterns[bot_text] = bottom_patterns.get(bot_text, 0) + 1
+        h = page.get("height", 660.0)
+        for b in page.get("blocks", []):
+            y0, y1 = b["bbox"][1], b["bbox"][3]
+            txt = b["raw_text"].strip()
+            if y0 < h * 0.06 or y1 > h * 0.94:
+                margin_patterns[txt] = margin_patterns.get(txt, 0) + 1
 
-    # Text repeated >= 3 times at top/bottom or matching known watermark/InDesign regex is furniture
     indesign_re = re.compile(r".*\.indd\s+\d+:\d+:\d+.*Page\s+\w+", re.IGNORECASE)
     watermark_re = re.compile(r"www\.[a-z0-9\-]+\.(info|org|com|net)", re.IGNORECASE)
+    page_num_re = re.compile(r"^(\d{1,4}|[ivxlcdm]+)$", re.IGNORECASE)
+    running_head_re = re.compile(r"^(Chapter\s+\d+|[A-Z0-9\s]{3,30}\s+\d{1,4})$", re.IGNORECASE)
 
     clean_pages: list[dict[str, Any]] = []
     for page in pages_data:
+        h = page.get("height", 660.0)
         clean_blocks = []
         for b in page.get("blocks", []):
             txt = b["raw_text"].strip()
+            y0, y1 = b["bbox"][1], b["bbox"][3]
             is_furniture = False
 
-            if (
-                top_patterns.get(txt, 0) >= 3
-                or bottom_patterns.get(txt, 0) >= 3
-                or indesign_re.search(txt)
-                or watermark_re.search(txt)
-            ) or (
-                b["bbox"][1] < page["height"] * 0.08
-                and len(txt) < 80
-                and ("■" in txt or re.search(r"Chapter\s+\d+", txt))
-            ):
+            # Universal watermark check anywhere on page
+            if watermark_re.search(txt) or indesign_re.search(txt) or ((y0 < h * 0.06 or y1 > h * 0.94) and (
+                margin_patterns.get(txt, 0) >= 2
+                or page_num_re.match(txt)
+                or (running_head_re.match(txt) and len(txt) < 40)
+                or ("■" in txt and len(txt) < 50)
+            )):
                 is_furniture = True
 
             if is_furniture:
                 b["block_type"] = "furniture"
             clean_blocks.append(b)
 
-        page_copy = {**page, "blocks": clean_blocks}
-        clean_pages.append(page_copy)
+        clean_pages.append({**page, "blocks": clean_blocks})
 
     write_json(out_dir / "clean_pages.json", {"pages": clean_pages})
     progress_fn(len(clean_pages), "Furniture filtering complete.")
 
 
 # ---------------------------------------------------------------------------
-# Stage S05: Reading Order
+# Stage S05: Reading Order (XY-Cut++ Column Detection)
 # ---------------------------------------------------------------------------
 def _stage_s05_reading_order(
     task: dict[str, Any],
@@ -283,10 +280,61 @@ def _stage_s05_reading_order(
     pages_data = json.loads((s04_dir / "clean_pages.json").read_text(encoding="utf-8"))["pages"]
 
     for page in pages_data:
-        # Sort non-furniture blocks primarily by vertical y0, secondary x0
+        pw = page.get("width", 530.0)
+        ph = page.get("height", 660.0)
         blocks = [b for b in page["blocks"] if b["block_type"] != "furniture"]
-        blocks.sort(key=lambda b: (round(b["bbox"][1] / 15.0), b["bbox"][0]))
-        page["blocks"] = blocks
+        if not blocks:
+            page["blocks"] = []
+            continue
+
+        # Multi-column detection (XY-Cut++)
+        mid_x = pw / 2.0
+        left_blocks = [b for b in blocks if b["bbox"][2] <= mid_x + 10]
+        right_blocks = [b for b in blocks if b["bbox"][0] >= mid_x - 10]
+        spanning_blocks = [
+            b for b in blocks if b["bbox"][0] < mid_x - 10 and b["bbox"][2] > mid_x + 10
+        ]
+
+        is_two_col = (
+            len(left_blocks) >= 2
+            and len(right_blocks) >= 2
+            and (len(left_blocks) + len(right_blocks)) / len(blocks) >= 0.75
+            and len(spanning_blocks) <= 2
+        )
+
+        if is_two_col:
+            top_spanning = [b for b in spanning_blocks if b["bbox"][1] < ph * 0.3]
+            bot_spanning = [b for b in spanning_blocks if b["bbox"][1] >= ph * 0.3]
+
+            left_sorted = sorted(
+                left_blocks, key=lambda b: (round(b["bbox"][1] / 3.5), b["bbox"][0])
+            )
+            right_sorted = sorted(
+                right_blocks, key=lambda b: (round(b["bbox"][1] / 3.5), b["bbox"][0])
+            )
+            ordered = (
+                sorted(top_spanning, key=lambda b: b["bbox"][1])
+                + left_sorted
+                + right_sorted
+                + sorted(bot_spanning, key=lambda b: b["bbox"][1])
+            )
+        else:
+            ordered = sorted(blocks, key=lambda b: (round(b["bbox"][1] / 3.5), b["bbox"][0]))
+
+        # Chapter opening banner inversion check (e.g. 'C H A P T E R 1: ...')
+        ch_idx = next(
+            (
+                i
+                for i, b in enumerate(ordered)
+                if re.match(r"^C\s*H\s*A\s*P\s*T\s*E\s*R\s*\d+", b["raw_text"], re.IGNORECASE)
+            ),
+            None,
+        )
+        if ch_idx is not None and ch_idx > 0 and ordered[ch_idx]["bbox"][1] < ph * 0.3:
+            ch_block = ordered.pop(ch_idx)
+            ordered.insert(0, ch_block)
+
+        page["blocks"] = ordered
 
     write_json(out_dir / "ordered_pages.json", {"pages": pages_data})
     progress_fn(len(pages_data), "Reading order organized.")
@@ -309,25 +357,35 @@ def _stage_s06_structure(
     if s01_dir and (s01_dir / "inspection.json").is_file():
         toc = json.loads((s01_dir / "inspection.json").read_text(encoding="utf-8")).get("toc", [])
 
-    # Map TOC items to page blocks
+    # Map TOC items to page blocks with strict matching
     for page in pages_data:
         p_idx = page["page_idx"]
         page_toc = [t for t in toc if t.get("page_idx") == p_idx]
 
         for block in page["blocks"]:
             txt = block["raw_text"].strip()
-            # Match with TOC titles
-            matched_toc = next((t for t in page_toc if t["title"].lower() in txt.lower()), None)
+            clean_txt_norm = re.sub(r"[^a-z0-9]", "", txt.lower())
+
+            matched_toc = None
+            for t in page_toc:
+                t_norm = re.sub(r"[^a-z0-9]", "", t["title"].lower())
+                if len(t_norm) >= 4 and (t_norm in clean_txt_norm or clean_txt_norm in t_norm):
+                    matched_toc = t
+                    break
+
             if matched_toc:
                 block["block_type"] = "heading"
                 block["metadata"]["level"] = matched_toc["level"]
                 block["metadata"]["title"] = matched_toc["title"]
-            elif (
-                txt.startswith(("Chapter ", "Section ", "APPENDIX "))
-                or block["block_type"] == "heading"
-            ):
-                block["block_type"] = "heading"
-                block["metadata"]["level"] = 1
+            elif block.get("is_bold") and len(txt) < 100 and not txt.endswith((".", ";", ":", ",")):
+                if re.match(r"^(Chapter\s+\d+|Appendix\s+\w+|Index)$", txt, re.IGNORECASE):
+                    block["block_type"] = "heading"
+                    block["metadata"]["level"] = 1
+                elif block["block_type"] == "heading":
+                    block["metadata"]["level"] = 2
+            else:
+                if block["block_type"] == "heading":
+                    block["block_type"] = "paragraph"
 
     write_json(out_dir / "structured_pages.json", {"pages": pages_data, "toc": toc})
     progress_fn(len(pages_data), "Structure and headings identified.")
@@ -355,7 +413,6 @@ def _stage_s07_continuity(
         if curr_blocks and next_blocks:
             last = curr_blocks[-1]
             first = next_blocks[0]
-            # If last block ends with hyphen or lowercase without period
             if (
                 last["block_type"] == "paragraph"
                 and first["block_type"] == "paragraph"
@@ -382,53 +439,89 @@ def _stage_s08_typed_content(
         "pages"
     ]
 
-    asm_mnemonics = {
-        "mov",
-        "push",
-        "pop",
-        "call",
-        "jmp",
-        "sub",
-        "add",
-        "xor",
-        "and",
-        "or",
-        "test",
-        "cmp",
-        "lea",
-        "ret",
-        "nop",
-        "int",
+    asm_registers = {
+        "eax",
+        "ebx",
+        "ecx",
+        "edx",
+        "esi",
+        "edi",
+        "ebp",
+        "esp",
+        "rax",
+        "rbx",
+        "rcx",
+        "rdx",
+        "rsi",
+        "rdi",
+        "rbp",
+        "rsp",
+        "r8",
+        "r9",
+        "r10",
+        "r11",
+        "r12",
+        "r13",
+        "r14",
+        "r15",
+        "al",
+        "bl",
+        "cl",
+        "dl",
+        "ah",
+        "bh",
+        "ch",
+        "dh",
+        "ax",
+        "bx",
+        "cx",
+        "dx",
+        "sp",
+        "bp",
+        "si",
+        "di",
     }
-    c_keywords = {
+    c_types_keywords = {
         "typedef",
         "struct",
-        "return",
         "sizeof",
-        "void",
-        "unsigned",
         "volatile",
+        "unsigned",
         "#include",
         "#define",
+        "memcpy",
+        "uint32_t",
+        "uint64_t",
+        "dword",
+        "qword",
+        "guid",
     }
 
     code_block_count = 0
     for page in pages_data:
         for block in page["blocks"]:
             txt = block["raw_text"]
-            words = set(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", txt.lower()))
+            b_type = block["block_type"]
 
-            # Detect assembly listings or C structs
-            asm_matches = len(words.intersection(asm_mnemonics))
-            c_matches = len(words.intersection(c_keywords))
+            is_mono = block.get("is_mono", False) or b_type == "code"
+
+            words = set(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", txt.lower()))
+            has_reg = bool(words.intersection(asm_registers))
+            has_c_kw = bool(words.intersection(c_types_keywords))
+            has_line_num = bool(re.search(r"^\s*\d{2}:", txt, re.MULTILINE))
+            has_mem_bracket = bool(re.search(r"\[[eErR]?[a-z0-9_+* -]+\]", txt))
             has_hex_addr = bool(re.search(r"0x[0-9a-fA-F]{4,8}", txt))
 
-            if (asm_matches >= 2 or (asm_matches >= 1 and has_hex_addr)) or c_matches >= 2:
+            if is_mono or has_line_num or (has_reg and (has_mem_bracket or has_hex_addr)):
                 block["block_type"] = "code"
-                block["metadata"]["language"] = "x86_asm" if asm_matches >= c_matches else "c"
+                if has_c_kw and not has_reg:
+                    block["metadata"]["language"] = "c"
+                else:
+                    block["metadata"]["language"] = "x86_asm"
                 code_block_count += 1
             elif txt.strip().startswith(("1.", "2.", "3.", "■", "•", "-")):
-                block["block_type"] = "list_item"
+                if block["block_type"] != "heading":
+                    block["block_type"] = "list_item"
 
     write_json(
         out_dir / "typed_pages.json",
@@ -520,18 +613,33 @@ def _stage_s10_clean(
         ("fi nd", "find"),
         ("fi rst", "first"),
         ("defi ne", "define"),
+        ("defi ned", "defined"),
         ("effi cient", "efficient"),
+        ("affi liate", "affiliate"),
+        ("offi ce", "office"),
+        ("confl ict", "conflict"),
+        ("signifi cant", "significant"),
+        ("signifi cantly", "significantly"),
+        ("speci fi", "specifi"),
+        ("fi eld", "field"),
+        ("identi fi", "identifi"),
+        ("beneﬁ", "benefi"),
     ]
 
     for node in nodes_data:
         text = node["text"]
-        # NFC and fix encoding with ftfy
         text = ftfy.fix_text(text)
-        # Fix spaced ligatures
+
         for bad, good in ligature_fixes:
             text = text.replace(bad, good)
-        # Remove soft hyphens
-        text = text.replace("\xad", "")
+
+        text = re.sub(r"\bC\s+H\s+A\s+P\s+T\s+E\s+R\b", "CHAPTER", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bA\s+P\s+P\s+E\s+N\s+D\s+I\s+X\b", "APPENDIX", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bI\s+N\s+D\s+E\s+X\b", "INDEX", text, flags=re.IGNORECASE)
+
+        text = text.replace("\xad", "").replace("\x02", "").replace("\ufffd", "")
+        text = re.sub(r"(\b[a-zA-Z]{3,})-\s*\n\s*([a-z]{2,}\b)", r"\1\2", text)
+
         node["text"] = text
 
     write_json(out_dir / "clean_graph.json", {"nodes": nodes_data})

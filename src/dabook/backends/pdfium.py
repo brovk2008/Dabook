@@ -2,7 +2,8 @@
 PDF extraction backend using pypdfium2 (§8.2).
 
 Fast, permissive C-level PDF parsing. Extracts character-level bounding boxes,
-word runs, lines, page dimensions, and embedded bookmarks.
+word runs, lines, page dimensions, embedded bookmarks, and exact font metrics
+from PDF graphics-state objects.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ class PdfiumExtractor:
         return items
 
     def extract_page(self, page_idx: int) -> PageData:
-        """Extract all blocks, lines, and bounding boxes for a single page."""
+        """Extract all blocks, lines, and bounding boxes for a single page with graphics state."""
         page = self.doc[page_idx]
         pw, ph = page.get_size()
         tp = page.get_textpage()
@@ -80,60 +81,143 @@ class PdfiumExtractor:
                 char_count=0,
             )
 
-        n_rects = tp.count_rects()
-        raw_rects: list[tuple[float, float, float, float, str, float]] = []
+        # 1. Extract visual spans with graphics-state metadata
+        spans: list[dict[str, Any]] = []
+        try:
+            for obj in page.get_objects():
+                if not isinstance(obj, pdfium.PdfTextObj):
+                    continue
+                obj.textpage = tp
+                raw_text = obj.extract()
+                if not raw_text:
+                    continue
 
-        for i in range(n_rects):
-            rx0, ry0_pdf, rx1, ry1_pdf = tp.get_rect(i)
-            # In PDF coordinates: bottom is 0. Convert to top-left origin:
-            x0 = max(0.0, rx0)
-            y0 = max(0.0, ph - ry1_pdf)
-            x1 = min(pw, rx1)
-            y1 = min(ph, ry0_pdf)
-            h = max(1.0, y1 - y0)
-            text = tp.get_text_bounded(rx0, ry0_pdf, rx1, ry1_pdf).strip()
-            if text:
-                raw_rects.append((x0, y0, x1, y1, text, h))
+                font = obj.get_font()
+                fname = (font.get_family_name() or "") if hasattr(font, "get_family_name") else ""
+                weight = font.get_weight() if hasattr(font, "get_weight") else 400
+                fs = obj.get_font_size() if hasattr(obj, "get_font_size") else 10.0
 
-        # Group rects into lines by vertical alignment (y0 within threshold)
-        lines: list[TextLine] = []
-        raw_text_full = tp.get_text_range()
-        split_lines = [ln.strip() for ln in raw_text_full.splitlines() if ln.strip()]
+                bounds = obj.get_bounds()
+                x0 = max(0.0, bounds[0])
+                top_y = max(0.0, ph - bounds[3])
+                x1 = min(pw, bounds[2])
+                bot_y = max(top_y + 1.0, ph - bounds[1])
 
-        # Estimate average font size
-        font_sizes = [r[5] for r in raw_rects if r[5] > 0]
-        avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 10.0
+                fname_lower = fname.lower()
+                is_mono = any(
+                    m in fname_lower
+                    for m in [
+                        "courier",
+                        "mono",
+                        "code",
+                        "consolas",
+                        "inconsolata",
+                        "typewriter",
+                        "menlo",
+                    ]
+                )
 
-        blocks: list[RawBlock] = []
-        block_idx = 0
+                spans.append({
+                    "x0": x0,
+                    "y0": top_y,
+                    "x1": x1,
+                    "y1": bot_y,
+                    "text": raw_text,
+                    "font": fname,
+                    "weight": weight,
+                    "font_size": fs,
+                    "is_mono": is_mono,
+                })
+        except Exception as exc:
+            logger.debug("Object extraction error on page %d: %s", page_idx, exc)
 
-        # Construct lines with estimated bounding boxes
-        for line_idx, line_text in enumerate(split_lines):
-            # Estimate bbox from matching rects or linear distribution
-            matching = [r for r in raw_rects if r[4] in line_text or line_text in r[4]]
-            if matching:
-                min_x = min(r[0] for r in matching)
-                min_y = min(r[1] for r in matching)
-                max_x = max(r[2] for r in matching)
-                max_y = max(r[3] for r in matching)
-                line_fs = max(r[5] for r in matching)
+        # Fallback to textpage rects if no spans were extracted
+        if not spans:
+            return self._extract_page_fallback(page_idx, page, pw, ph, tp, char_count)
+
+        # 2. Sort spans top-to-bottom, left-to-right
+        spans.sort(key=lambda s: (round(s["y0"] / 3.5), s["x0"]))
+
+        # 3. Horizontal baseline clustering into visual lines
+        lines_spans: list[list[dict[str, Any]]] = []
+        curr_line: list[dict[str, Any]] = []
+        for s in spans:
+            if not curr_line:
+                curr_line.append(s)
+                continue
+            if abs(s["y0"] - curr_line[0]["y0"]) <= 3.5:
+                curr_line.append(s)
             else:
-                y_pos = (line_idx / max(1, len(split_lines))) * ph
-                min_x, min_y, max_x, max_y = 50.0, y_pos, pw - 50.0, y_pos + avg_font_size
-                line_fs = avg_font_size
+                lines_spans.append(curr_line)
+                curr_line = [s]
+        if curr_line:
+            lines_spans.append(curr_line)
 
-            lines.append(
+        assembled_lines: list[TextLine] = []
+        for l_spans in lines_spans:
+            l_spans.sort(key=lambda s: s["x0"])
+            line_text = ""
+            for i, s in enumerate(l_spans):
+                t = s["text"]
+                # Ligature healing on adjacent spans (e.g. 'defi' + 'fi ned')
+                if line_text.endswith(("fi", "fl", "ff")) and t.startswith(("fi ", "fl ", "ff ")):
+                    t = t[3:]
+                elif (
+                    line_text
+                    and not line_text.endswith((" ", "-", "[", "("))
+                    and not t.startswith((" ", "]", ")", ",", ".", ";", ":"))
+                    and s["x0"] - l_spans[i - 1]["x1"] > 2.0
+                ):
+                    line_text += " "
+                line_text += t
+
+            clean_line_text = line_text.strip()
+            if not clean_line_text:
+                continue
+
+            mono_chars = sum(len(s["text"]) for s in l_spans if s["is_mono"])
+            total_chars = max(1, sum(len(s["text"]) for s in l_spans))
+            is_line_mono = (mono_chars / total_chars >= 0.5) or (
+                l_spans[0]["is_mono"]
+                and clean_line_text.startswith((
+                    "01:",
+                    "02:",
+                    ";",
+                    "//",
+                    "mov",
+                    "push",
+                    "pop",
+                    "add",
+                    "sub",
+                    "xor",
+                    "call",
+                    "ret",
+                ))
+            )
+
+            avg_weight = sum(s["weight"] for s in l_spans) / len(l_spans)
+            max_fs = max(s["font_size"] for s in l_spans)
+            assembled_lines.append(
                 TextLine(
-                    text=line_text,
-                    bbox=[round(min_x, 2), round(min_y, 2), round(max_x, 2), round(max_y, 2)],
-                    font_size=round(line_fs, 1),
-                    is_bold=line_fs > avg_font_size * 1.15,
+                    text=clean_line_text,
+                    bbox=[
+                        round(min(s["x0"] for s in l_spans), 2),
+                        round(min(s["y0"] for s in l_spans), 2),
+                        round(max(s["x1"] for s in l_spans), 2),
+                        round(max(s["y1"] for s in l_spans), 2),
+                    ],
+                    font_size=round(max_fs, 1),
+                    is_bold=avg_weight >= 600,
+                    is_mono=is_line_mono,
                 )
             )
 
-        # Group consecutive lines into semantic blocks
+        # 4. Group lines into cohesive semantic blocks
+        blocks: list[RawBlock] = []
+        block_idx = 0
         current_lines: list[TextLine] = []
-        for line in lines:
+
+        for line in assembled_lines:
             if not current_lines:
                 current_lines.append(line)
                 continue
@@ -141,25 +225,22 @@ class PdfiumExtractor:
             prev = current_lines[-1]
             vert_gap = line.bbox[1] - prev.bbox[3]
 
-            # Break block on large vertical gap, or significant font size difference, or bullet/heading
-            is_heading = line.font_size > avg_font_size * 1.25
-            is_bullet = line.text.startswith(("■", "•", "-", "*", "1.", "2.", "3."))
-            is_code_start = line.text.startswith(
-                ("push ", "mov ", "pop ", "call ", "int ", "sub ", "add ", "xor ", "0x")
+            is_mono_transition = line.is_mono != prev.is_mono
+            is_heading = (
+                line.is_bold and len(line.text) < 120 and not line.text.endswith((".", ";", ":"))
             )
+            is_gap = vert_gap > max(prev.font_size, 10.0) * 1.5
+            is_bullet = line.text.startswith(("■", "•", "-", "*", "1.", "2.", "3."))
 
-            if vert_gap > prev.font_size * 1.6 or is_heading or is_bullet or is_code_start:
-                # Flush block
-                block = self._create_block(page_idx, block_idx, current_lines, avg_font_size)
-                blocks.append(block)
+            if is_mono_transition or is_heading or is_gap or is_bullet:
+                blocks.append(self._create_block(page_idx, block_idx, current_lines))
                 block_idx += 1
                 current_lines = [line]
             else:
                 current_lines.append(line)
 
         if current_lines:
-            block = self._create_block(page_idx, block_idx, current_lines, avg_font_size)
-            blocks.append(block)
+            blocks.append(self._create_block(page_idx, block_idx, current_lines))
 
         return PageData(
             page_idx=page_idx,
@@ -175,29 +256,41 @@ class PdfiumExtractor:
         page_idx: int,
         block_idx: int,
         lines: list[TextLine],
-        avg_font_size: float,
     ) -> RawBlock:
         x0 = min(ln.bbox[0] for ln in lines)
         y0 = min(ln.bbox[1] for ln in lines)
         x1 = max(ln.bbox[2] for ln in lines)
         y1 = max(ln.bbox[3] for ln in lines)
-        full_text = " ".join(ln.text for ln in lines)
-        max_fs = max(ln.font_size for ln in lines)
-        is_bold = any(ln.is_bold for ln in lines)
 
-        # Detect block type
-        block_type = "paragraph"
-        if max_fs > avg_font_size * 1.25:
-            block_type = "heading"
-        elif any(
-            ln.text.startswith(
-                ("push ", "mov ", "pop ", "call ", "sub ", "add ", "xor ", "0x", "int ")
-            )
-            for ln in lines
-        ):
+        mono_chars = sum(len(ln.text) for ln in lines if ln.is_mono)
+        total_chars = max(1, sum(len(ln.text) for ln in lines))
+        is_all_mono = any(ln.is_mono for ln in lines) and (mono_chars / total_chars >= 0.5)
+
+        is_heading = (
+            lines[0].is_bold
+            and len(lines) <= 2
+            and sum(len(ln.text) for ln in lines) < 120
+            and not lines[-1].text.endswith((".", ";"))
+        )
+        is_bullet = lines[0].text.startswith(("■", "•", "-", "*"))
+
+        if is_all_mono:
             block_type = "code"
-        elif lines[0].text.startswith(("■", "•", "-", "*")):
+            base_x = min(ln.bbox[0] for ln in lines)
+            indented = []
+            for ln in lines:
+                indent = max(0, round((ln.bbox[0] - base_x) / 6.0))
+                indented.append((" " * indent) + ln.text)
+            full_text = "\n".join(indented)
+        elif is_heading:
+            block_type = "heading"
+            full_text = " ".join(ln.text for ln in lines)
+        elif is_bullet:
             block_type = "list_item"
+            full_text = " ".join(ln.text for ln in lines)
+        else:
+            block_type = "paragraph"
+            full_text = " ".join(ln.text for ln in lines)
 
         return RawBlock(
             block_id=f"p{page_idx}_b{block_idx}",
@@ -207,7 +300,53 @@ class PdfiumExtractor:
             normalized_text=full_text,
             clean_text=full_text,
             block_type=block_type,
-            font_size=round(max_fs, 1),
-            is_bold=is_bold,
+            font_size=round(max(ln.font_size for ln in lines), 1),
+            is_bold=lines[0].is_bold,
+            is_mono=is_all_mono,
             lines=lines,
+        )
+
+    def _extract_page_fallback(
+        self,
+        page_idx: int,
+        page: Any,
+        pw: float,
+        ph: float,
+        tp: Any,
+        char_count: int,
+    ) -> PageData:
+        """Fallback extractor using raw textpage if object graphics state is unavailable."""
+        raw_text_full = tp.get_text_range()
+        split_lines = [ln.strip() for ln in raw_text_full.splitlines() if ln.strip()]
+        lines: list[TextLine] = []
+        for line_idx, line_text in enumerate(split_lines):
+            y_pos = (line_idx / max(1, len(split_lines))) * ph
+            lines.append(
+                TextLine(
+                    text=line_text,
+                    bbox=[50.0, round(y_pos, 2), pw - 50.0, round(y_pos + 12.0, 2)],
+                    font_size=10.0,
+                    is_bold=False,
+                    is_mono=False,
+                )
+            )
+        blocks = [
+            RawBlock(
+                block_id=f"p{page_idx}_b0",
+                page_idx=page_idx,
+                bbox=[50.0, 50.0, pw - 50.0, ph - 50.0],
+                raw_text="\n".join(split_lines),
+                normalized_text="\n".join(split_lines),
+                clean_text="\n".join(split_lines),
+                block_type="paragraph",
+                lines=lines,
+            )
+        ]
+        return PageData(
+            page_idx=page_idx,
+            width=pw,
+            height=ph,
+            blocks=blocks,
+            is_scanned=False,
+            char_count=char_count,
         )
