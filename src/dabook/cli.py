@@ -20,7 +20,15 @@ from rich.table import Table
 
 from dabook.config.models import DabookConfig
 
-console = Console()
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+console = Console(legacy_windows=False)
 app = typer.Typer(
     name="dabook",
     help="📚 DABOOK — compile books into ML-ready datasets",
@@ -129,39 +137,49 @@ def _run_impl(
 
     # Collect PDFs
     pdfs = _collect_pdfs(paths)
-    if not pdfs:
-        console.print("[yellow]⚠ No PDF files found.[/yellow]")
+    existing_books = con.execute("SELECT COUNT(*) FROM books WHERE state != 'removed'").fetchone()[
+        0
+    ]
+    if not pdfs and existing_books == 0:
+        console.print("[yellow]⚠ No PDF files found and no active books in workspace.[/yellow]")
         lock.release()
         raise typer.Exit(0)
 
+    book_count = len(pdfs) if pdfs else existing_books
+    label = f"{book_count} book(s)" if pdfs else f"{book_count} existing book(s)"
     console.print(
         Panel.fit(
-            f"[bold]DABOOK[/bold] · {len(pdfs)} book(s) · profile=[cyan]{profile}[/cyan] · workspace=[dim]{ws}[/dim]",
+            f"[bold]DABOOK[/bold] · {label} · profile=[cyan]{profile}[/cyan] · workspace=[dim]{ws}[/dim]",
             border_style="blue",
         )
     )
 
-    # Register books and plan tasks
-    params = cfg.to_params_dict()
-    registered = 0
-    with Progress(
-        SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True
-    ) as prog:
-        task = prog.add_task("Registering books…", total=len(pdfs))
-        for pdf in pdfs:
-            try:
-                book_id, sha = register_pdf(ws, pdf)
-                page_count = _get_page_count(pdf) or 0
-                # Update page count in DB
-                with write_txn(con):
-                    con.execute("UPDATE books SET pages=? WHERE id=?", (page_count, book_id))
-                plan_book(
-                    con, book_id, sha, page_count, ws, params, shard_pages=cfg.limits.shard_pages
-                )
-                registered += 1
-                prog.advance(task)
-            except Exception as e:
-                console.print(f"[red]✗ {pdf.name}: {e}[/red]")
+    if pdfs:
+        # Register books and plan tasks
+        params = cfg.to_params_dict()
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True
+        ) as prog:
+            task = prog.add_task("Registering books…", total=len(pdfs))
+            for pdf in pdfs:
+                try:
+                    book_id, sha = register_pdf(ws, pdf)
+                    page_count = _get_page_count(pdf) or 0
+                    # Update page count in DB
+                    with write_txn(con):
+                        con.execute("UPDATE books SET pages=? WHERE id=?", (page_count, book_id))
+                    plan_book(
+                        con,
+                        book_id,
+                        sha,
+                        page_count,
+                        ws,
+                        params,
+                        shard_pages=cfg.limits.shard_pages,
+                    )
+                    prog.advance(task)
+                except Exception as e:
+                    console.print(f"[red]✗ {pdf.name}: {e}[/red]")
 
     con.close()
 
@@ -400,13 +418,19 @@ def _run_doctor_checks(workspace: Path, db_path: Path) -> list[dict]:
         }
     )
 
-    # Workspace writable
-    ws_ok = workspace.is_dir() and os.access(workspace, os.W_OK)
+    # Workspace writable (or parent writable if workspace does not exist yet)
+    if workspace.exists():
+        ws_ok = workspace.is_dir() and os.access(workspace, os.W_OK)
+        detail = str(workspace)
+    else:
+        parent = workspace.parent if workspace.parent != Path("") else Path(".")
+        ws_ok = parent.exists() and os.access(parent, os.W_OK)
+        detail = f"{workspace} (ready to create)"
     checks.append(
         {
             "name": "Workspace writable",
             "ok": ws_ok,
-            "detail": str(workspace),
+            "detail": detail,
         }
     )
 
