@@ -94,12 +94,8 @@ def test_workspace_consolidation_and_preview(tmp_path: Path) -> None:
     pretrain_data_1 = [{"doc_id": "doc_01", "chapter_title": "Chap 1", "text": "# Chap 1\nHello"}]
     pretrain_data_2 = [{"doc_id": "doc_02", "chapter_title": "Chap 2", "text": "# Chap 2\nWorld"}]
 
-    (book1 / "pretrain.jsonl").write_text(
-        json.dumps(pretrain_data_1[0]) + "\n", encoding="utf-8"
-    )
-    (book2 / "pretrain.jsonl").write_text(
-        json.dumps(pretrain_data_2[0]) + "\n", encoding="utf-8"
-    )
+    (book1 / "pretrain.jsonl").write_text(json.dumps(pretrain_data_1[0]) + "\n", encoding="utf-8")
+    (book2 / "pretrain.jsonl").write_text(json.dumps(pretrain_data_2[0]) + "\n", encoding="utf-8")
 
     sft_data = [{"id": "sft_01", "instruction": "Explain X", "output": "X is..."}]
     (book1 / "sft.jsonl").write_text(json.dumps(sft_data[0]) + "\n", encoding="utf-8")
@@ -111,7 +107,12 @@ def test_workspace_consolidation_and_preview(tmp_path: Path) -> None:
     assert (workspace / "compiled" / "manifest.json").is_file()
 
     # Check consolidated contents
-    compiled_pretrain = (workspace / "compiled" / "all_pretrain.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    compiled_pretrain = (
+        (workspace / "compiled" / "all_pretrain.jsonl")
+        .read_text(encoding="utf-8")
+        .strip()
+        .splitlines()
+    )
     assert len(compiled_pretrain) == 2
 
     # Check list datasets
