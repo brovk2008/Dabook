@@ -167,7 +167,7 @@ def plan_book(
             with write_txn(con):
                 # Upsert: if task with this stage_key exists, leave it; else insert
                 existing = con.execute(
-                    """SELECT id, state FROM tasks
+                    """SELECT id, state, stage_key FROM tasks
                         WHERE book_id=? AND stage=? AND shard_idx=?""",
                     (book_id, spec.name, shard_idx),
                 ).fetchone()

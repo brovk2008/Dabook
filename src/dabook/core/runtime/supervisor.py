@@ -286,6 +286,9 @@ class Supervisor:
                 int(self.CRASH_LOOP_WINDOW),
             )
             self._spawn_cooldown[lane] = now + 30.0
+            # Clear history so the 30s cooldown is a genuine reset, not a
+            # permanent block that re-triggers on every subsequent spawn attempt.
+            self._death_history[lane].clear()
             return True
         return False
 

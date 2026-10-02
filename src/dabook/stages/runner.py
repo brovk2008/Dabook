@@ -55,37 +55,44 @@ def run_stage(
         "impl_version": "0.2.0-real",
     }
 
-    with StageCommit(stage_dir, key, meta) as out_dir:
-        if stage == "s00_register":
-            _stage_s00_register(task, pdf_path, out_dir)
-        elif stage == "s01_inspect":
-            _stage_s01_inspect(task, pdf_path, out_dir, progress_fn)
-        elif stage == "s02_extract":
-            _stage_s02_extract(task, pdf_path, out_dir, progress_fn, should_abort)
-        elif stage == "s03_merge":
-            _stage_s03_merge(task, work_dir, out_dir, progress_fn)
-        elif stage == "s04_furniture":
-            _stage_s04_furniture(task, work_dir, out_dir, progress_fn)
-        elif stage == "s05_reading_order":
-            _stage_s05_reading_order(task, work_dir, out_dir, progress_fn)
-        elif stage == "s06_structure":
-            _stage_s06_structure(task, work_dir, out_dir, progress_fn)
-        elif stage == "s07_continuity":
-            _stage_s07_continuity(task, work_dir, out_dir, progress_fn)
-        elif stage == "s08_typed_content":
-            _stage_s08_typed_content(task, work_dir, out_dir, progress_fn)
-        elif stage == "s09_graph":
-            _stage_s09_graph(task, work_dir, out_dir, progress_fn)
-        elif stage == "s10_clean":
-            _stage_s10_clean(task, work_dir, out_dir, progress_fn)
-        elif stage == "s11_validate":
-            _stage_s11_validate(task, work_dir, out_dir, progress_fn)
-        elif stage == "s12_semantic":
-            _stage_s12_semantic(task, work_dir, out_dir, progress_fn)
-        elif stage == "s13_compile":
-            _stage_s13_compile(task, work_dir, out_dir, progress_fn)
-        else:
-            write_json(out_dir / "output.json", {"status": "ok", "stage": stage})
+    try:
+        with StageCommit(stage_dir, key, meta) as out_dir:
+            if stage == "s00_register":
+                _stage_s00_register(task, pdf_path, out_dir)
+            elif stage == "s01_inspect":
+                _stage_s01_inspect(task, pdf_path, out_dir, progress_fn)
+            elif stage == "s02_extract":
+                _stage_s02_extract(task, pdf_path, out_dir, progress_fn, should_abort)
+            elif stage == "s03_merge":
+                _stage_s03_merge(task, work_dir, out_dir, progress_fn)
+            elif stage == "s04_furniture":
+                _stage_s04_furniture(task, work_dir, out_dir, progress_fn)
+            elif stage == "s05_reading_order":
+                _stage_s05_reading_order(task, work_dir, out_dir, progress_fn)
+            elif stage == "s06_structure":
+                _stage_s06_structure(task, work_dir, out_dir, progress_fn)
+            elif stage == "s07_continuity":
+                _stage_s07_continuity(task, work_dir, out_dir, progress_fn)
+            elif stage == "s08_typed_content":
+                _stage_s08_typed_content(task, work_dir, out_dir, progress_fn)
+            elif stage == "s09_graph":
+                _stage_s09_graph(task, work_dir, out_dir, progress_fn)
+            elif stage == "s10_clean":
+                _stage_s10_clean(task, work_dir, out_dir, progress_fn)
+            elif stage == "s11_validate":
+                _stage_s11_validate(task, work_dir, out_dir, progress_fn)
+            elif stage == "s12_semantic":
+                _stage_s12_semantic(task, work_dir, out_dir, progress_fn)
+            elif stage == "s13_compile":
+                _stage_s13_compile(task, work_dir, out_dir, progress_fn)
+            else:
+                write_json(out_dir / "output.json", {"status": "ok", "stage": stage})
+    except FileExistsError:
+        # Another worker already committed this stage — treat as a cache hit.
+        return {
+            "output_path": str(stage_dir / key),
+            "duration_ms": 0,
+        }
 
     elapsed_ms = int((time.time() - t0) * 1000)
     return {
@@ -286,6 +293,8 @@ def _stage_s05_reading_order(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s04_dir = _get_latest_stage_dir(work_dir, "s04_furniture")
+    if s04_dir is None:
+        raise RuntimeError("s05_reading_order: missing s04_furniture output")
     pages_data = json.loads((s04_dir / "clean_pages.json").read_text(encoding="utf-8"))["pages"]
 
     for page in pages_data:
@@ -359,6 +368,8 @@ def _stage_s06_structure(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s05_dir = _get_latest_stage_dir(work_dir, "s05_reading_order")
+    if s05_dir is None:
+        raise RuntimeError("s06_structure: missing s05_reading_order output")
     s01_dir = _get_latest_stage_dir(work_dir, "s01_inspect")
 
     pages_data = json.loads((s05_dir / "ordered_pages.json").read_text(encoding="utf-8"))["pages"]
@@ -410,6 +421,8 @@ def _stage_s07_continuity(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s06_dir = _get_latest_stage_dir(work_dir, "s06_structure")
+    if s06_dir is None:
+        raise RuntimeError("s07_continuity: missing s06_structure output")
     pages_data = json.loads((s06_dir / "structured_pages.json").read_text(encoding="utf-8"))[
         "pages"
     ]
@@ -444,6 +457,8 @@ def _stage_s08_typed_content(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s07_dir = _get_latest_stage_dir(work_dir, "s07_continuity")
+    if s07_dir is None:
+        raise RuntimeError("s08_typed_content: missing s07_continuity output")
     pages_data = json.loads((s07_dir / "continuous_pages.json").read_text(encoding="utf-8"))[
         "pages"
     ]
@@ -549,6 +564,8 @@ def _stage_s09_graph(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s08_dir = _get_latest_stage_dir(work_dir, "s08_typed_content")
+    if s08_dir is None:
+        raise RuntimeError("s09_graph: missing s08_typed_content output")
     pages_data = json.loads((s08_dir / "typed_pages.json").read_text(encoding="utf-8"))["pages"]
 
     nodes: list[BookNode] = []
@@ -615,6 +632,8 @@ def _stage_s10_clean(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s09_dir = _get_latest_stage_dir(work_dir, "s09_graph")
+    if s09_dir is None:
+        raise RuntimeError("s10_clean: missing s09_graph output")
     nodes_data = json.loads((s09_dir / "graph.json").read_text(encoding="utf-8"))["nodes"]
 
     ligature_fixes = [
@@ -665,6 +684,8 @@ def _stage_s11_validate(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s10_dir = _get_latest_stage_dir(work_dir, "s10_clean")
+    if s10_dir is None:
+        raise RuntimeError("s11_validate: missing s10_clean output")
     nodes = json.loads((s10_dir / "clean_graph.json").read_text(encoding="utf-8"))["nodes"]
 
     total_words = sum(len(n["text"].split()) for n in nodes)
@@ -698,6 +719,8 @@ def _stage_s12_semantic(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s10_dir = _get_latest_stage_dir(work_dir, "s10_clean")
+    if s10_dir is None:
+        raise RuntimeError("s12_semantic: missing s10_clean output")
     nodes = json.loads((s10_dir / "clean_graph.json").read_text(encoding="utf-8"))["nodes"]
 
     node_by_id = {n["node_id"]: n for n in nodes}
@@ -725,6 +748,8 @@ def _stage_s13_compile(
     progress_fn: Callable[[int, str], None],
 ) -> None:
     s12_dir = _get_latest_stage_dir(work_dir, "s12_semantic")
+    if s12_dir is None:
+        raise RuntimeError("s13_compile: missing s12_semantic output")
     nodes = json.loads((s12_dir / "semantic_graph.json").read_text(encoding="utf-8"))["nodes"]
 
     datasets_dir = work_dir / "datasets"

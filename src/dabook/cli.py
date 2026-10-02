@@ -596,7 +596,9 @@ def _sync_settings(con: object, cfg: DabookConfig, port: int) -> None:  # type: 
         "retry.backoff_s": s.limits.backoff_s,
         "lease_s": s.limits.lease_s,
         "heartbeat_s": s.limits.heartbeat_s,
+        # Always clear stopping flag so a previous Ctrl+C doesn't block a fresh run
         "stopping": "0",
+        "queue.paused": "0",
         "ui.port": port,
     }
     for k, v in updates.items():

@@ -243,6 +243,7 @@ def worker_main(
     mark_worker_models_loaded(con, worker_id)
 
     hb_thread: HeartbeatThread | None = None
+    _consecutive_errors = 0
 
     try:
         while not stop.hard:
@@ -253,27 +254,47 @@ def worker_main(
                 break
 
             if s.queue_paused:
-                set_worker_idle(con, worker_id)
+                try:
+                    set_worker_idle(con, worker_id)
+                except Exception:
+                    pass
                 time.sleep(0.5)
                 continue
 
-            # Count active books for free_slots calculation
-            active_count = con.execute(
-                "SELECT COUNT(*) FROM books WHERE state='active'"
-            ).fetchone()[0]
-            free_slots = s.free_book_slots(active_count)
+            # Wrap the claim loop in a retry-friendly try/except so a transient
+            # DB error (locked, busy, connection hiccup) doesn't kill the worker.
+            try:
+                active_count = con.execute(
+                    "SELECT COUNT(*) FROM books WHERE state='active'"
+                ).fetchone()[0]
+                free_slots = s.free_book_slots(active_count)
 
-            task = claim_task(
-                con,
-                worker_id,
-                resource_class,
-                now=time.time(),
-                lease_s=s.lease_s,
-                free_slots=free_slots,
-            )
+                task = claim_task(
+                    con,
+                    worker_id,
+                    resource_class,
+                    now=time.time(),
+                    lease_s=s.lease_s,
+                    free_slots=free_slots,
+                )
+                _consecutive_errors = 0
+            except Exception as claim_exc:
+                _consecutive_errors += 1
+                backoff = min(30.0, 0.5 * (2 ** min(_consecutive_errors, 6)))
+                logger.warning(
+                    "DB error in claim loop (attempt %d, retry in %.1fs): %s",
+                    _consecutive_errors,
+                    backoff,
+                    claim_exc,
+                )
+                time.sleep(backoff)
+                continue
 
             if task is None:
-                set_worker_idle(con, worker_id)
+                try:
+                    set_worker_idle(con, worker_id)
+                except Exception:
+                    pass
                 time.sleep(0.5)
                 continue
 
