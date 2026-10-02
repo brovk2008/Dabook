@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dabook"
-version = "1.0.21"
+version = "1.0.22"
 description = "Compile any book-like document into a traceable, validated, editable Book Graph and export as ML-ready datasets"
 readme = "README.md"
 requires-python = ">=3.11"

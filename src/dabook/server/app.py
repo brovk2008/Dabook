@@ -29,6 +29,40 @@ def get_token() -> str:
     return _API_TOKEN
 
 
+def _launch_run_job(
+    paths: list[str],
+    workspace_str: str | None,
+    profile: str,
+    modes: list[str],
+    formats: list[str],
+) -> None:
+    """Background worker process spawned by /api/launch to process books."""
+    from pathlib import Path
+
+    from dabook.cli import run
+
+    path_objs = [Path(p) for p in paths]
+    ws_obj = Path(workspace_str) if workspace_str else None
+    try:
+        run(
+            paths=path_objs,
+            workspace=ws_obj,
+            profile=profile,
+            modes=modes,
+            formats=formats,
+            workers_cpu=None,
+            workers_gpu=None,
+            book_concurrency=None,
+            port=8765,
+            start_ui=False,
+            open_browser=False,
+            watch=False,
+            autotune=False,
+        )
+    except Exception:
+        pass
+
+
 def create_app(
     db_path: Path,
     workspace: Path,
@@ -255,35 +289,53 @@ def create_app(
         }
         """
         _require_token(request)
-        import subprocess
-        import sys
+        import multiprocessing
 
         body = await request.json()
-        paths: list[str] = body.get("paths", [])
+        raw_paths: list[str] = body.get("paths", [])
         profile: str = body.get("profile", "balanced")
-        modes: list[str] = [m.strip() for m in body.get("modes", "raw,rag").split(",")]
-        formats: list[str] = [f.strip() for f in body.get("formats", "jsonl").split(",")]
+        modes_str: str = body.get("modes", "raw,rag")
+        formats_str: str = body.get("formats", "jsonl")
         output_dir: str | None = body.get("output_dir") or None
 
-        if not paths:
-            raise HTTPException(400, "No paths provided")
+        ALLOWED_PROFILES = {"fast", "balanced", "quality", "archive"}
+        ALLOWED_MODES = {"raw", "pretrain", "sft", "rag", "code"}
+        ALLOWED_FORMATS = {"jsonl", "parquet", "hf"}
 
-        cmd = [sys.executable, "-m", "dabook.cli", "run"]
-        cmd += paths
-        cmd += ["--workspace", output_dir if output_dir else str(workspace)]
-        cmd += ["--profile", profile]
-        cmd += ["--modes", ",".join(modes)]
-        cmd += ["--formats", ",".join(formats)]
-        cmd += ["--no-open"]  # user is already in the browser
+        clean_profile = profile if profile in ALLOWED_PROFILES else "balanced"
+        clean_modes = [m.strip() for m in modes_str.split(",") if m.strip() in ALLOWED_MODES] or [
+            "raw",
+            "rag",
+        ]
+        clean_formats = [
+            f.strip() for f in formats_str.split(",") if f.strip() in ALLOWED_FORMATS
+        ] or ["jsonl"]
+
+        clean_paths: list[str] = []
+        for p in raw_paths:
+            if not isinstance(p, str) or not p.strip() or p.startswith("-"):
+                continue
+            path_obj = Path(p).resolve()
+            if path_obj.exists():
+                clean_paths.append(str(path_obj))
+
+        if not clean_paths:
+            raise HTTPException(400, "No valid or existing paths provided")
+
+        clean_workspace: str | None = None
+        if output_dir:
+            ws_path = Path(output_dir).resolve()
+            clean_workspace = str(ws_path)
+        else:
+            clean_workspace = str(workspace.resolve())
 
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
+            proc = multiprocessing.Process(
+                target=_launch_run_job,
+                args=(clean_paths, clean_workspace, clean_profile, clean_modes, clean_formats),
             )
-            return JSONResponse({"ok": True, "pid": proc.pid, "cmd": " ".join(cmd)})
+            proc.start()
+            return JSONResponse({"ok": True, "pid": proc.pid, "paths": clean_paths})
         except Exception as exc:
             raise HTTPException(500, f"Failed to launch: {exc}") from exc
 
