@@ -4,22 +4,28 @@
 
 [![CI](https://github.com/brovk2008/Dabook/actions/workflows/ci.yml/badge.svg)](https://github.com/brovk2008/Dabook/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/brovk2008/Dabook/actions/workflows/codeql.yml/badge.svg)](https://github.com/brovk2008/Dabook/actions/workflows/codeql.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)](CHANGELOG.md)
+[![PyPI - Version](https://img.shields.io/pypi/v/dabook.svg?logo=pypi&label=PyPI&color=blue)](https://pypi.org/project/dabook/)
+[![GitHub Release](https://img.shields.io/github/v/release/brovk2008/Dabook?logo=github&label=Release&color=green)](https://github.com/brovk2008/Dabook/releases/latest)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/dabook?logo=python&label=Python)](https://pypi.org/project/dabook/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
-[![SQLite](https://img.shields.io/badge/SQLite-3.35%2B-lightgrey.svg)](https://sqlite.org)
-[![Status](https://img.shields.io/badge/status-pre--alpha-red.svg)](pyproject.toml)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 ---
 
-## Version
+## 🚀 Latest Version & Release Notes
 
-**Current release: `v0.1.0` (Pre-Alpha)**
+<!-- LATEST_RELEASE_SECTION_START -->
+[![PyPI Version](https://img.shields.io/pypi/v/dabook?style=for-the-badge&logo=pypi&label=PyPI%20Version&color=3775A9)](https://pypi.org/project/dabook/)
+[![Latest Release](https://img.shields.io/github/v/release/brovk2008/Dabook?style=for-the-badge&logo=github&label=GitHub%20Release&color=2ea44f)](https://github.com/brovk2008/Dabook/releases/latest)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/dabook?style=for-the-badge&logo=pypi&label=Downloads&color=blue)](https://pypi.org/project/dabook/)
 
-This is early-stage software. The core pipeline (S00–S13) and worker/supervisor runtime are functional. Some features listed in the CLI help (e.g. `cache gc`, `--watch`, `--autotune`) are planned but not yet implemented.
+| Channel | Latest Version | Changelog & Notes | Install Command |
+|---|---|---|---|
+| **PyPI** | [![PyPI](https://img.shields.io/pypi/v/dabook?label=)](https://pypi.org/project/dabook/) | [PyPI Release History & Files ➔](https://pypi.org/project/dabook/#history) | `pip install -U dabook` |
+| **GitHub** | [![GitHub](https://img.shields.io/github/v/release/brovk2008/Dabook?label=)](https://github.com/brovk2008/Dabook/releases/latest) | [**What's New in Latest Release ➔**](https://github.com/brovk2008/Dabook/releases/latest) | `uv tool install dabook` |
 
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+> 💡 **What's in the latest version?** Click **[What's New in Latest Release](https://github.com/brovk2008/Dabook/releases/latest)** to inspect the complete changelog, merged features, and bugfixes generated automatically for every release. Full version history is also maintained in [CHANGELOG.md](CHANGELOG.md).
+<!-- LATEST_RELEASE_SECTION_END -->
 
 ---
 
