@@ -575,3 +575,108 @@ canvas { max-width: 100%; }
   text-align: center; color: var(--text-muted); padding: 40px; font-size: 13px;
 }
 
+/* =========================================================
+   Settings Panel
+   ========================================================= */
+.settings-page {
+  display: flex; flex-direction: column; gap: 20px;
+  max-width: 860px; margin: 0 auto; padding: 24px 0;
+}
+.settings-card { padding: 20px 24px; }
+.settings-info-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 8px 0; border-bottom: 1px solid var(--border); gap: 12px;
+}
+.settings-info-row:last-child { border-bottom: none; }
+.settings-info-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.settings-info-val {
+  font-size: 12px; color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  text-align: right; word-break: break-all;
+}
+.settings-field {
+  display: grid; grid-template-columns: 180px 1fr;
+  align-items: center; gap: 8px 16px; margin-bottom: 12px;
+}
+.settings-field label { font-size: 13px; color: var(--text-secondary); }
+.settings-field .settings-hint {
+  grid-column: 2; font-size: 11px; color: var(--text-muted); margin-top: -4px;
+}
+.settings-input {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: var(--radius-sm);
+  padding: 6px 10px; font-size: 13px; width: 120px;
+  transition: border-color 0.2s;
+}
+.settings-input:focus { outline: none; border-color: var(--border-focus); }
+.queue-controls-row { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 4px; }
+.settings-save-row {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-card); border-radius: var(--radius);
+  padding: 16px 20px; border: 1px solid var(--border);
+}
+.settings-save-msg { font-size: 13px; margin-left: 8px; }
+.btn-danger {
+  background: rgba(239,68,68,0.15); color: var(--red);
+  border: 1px solid rgba(239,68,68,0.3);
+  padding: 7px 14px; border-radius: var(--radius-sm);
+  font-size: 13px; cursor: pointer; transition: background 0.2s;
+}
+.btn-danger:hover { background: rgba(239,68,68,0.28); }
+
+/* =========================================================
+   Launch Panel
+   ========================================================= */
+.launch-page {
+  display: flex; flex-direction: column; gap: 20px;
+  max-width: 860px; margin: 0 auto; padding: 24px 0;
+}
+.launch-card { padding: 20px 24px; }
+.launch-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.launch-field label { font-size: 13px; color: var(--text-secondary); }
+.launch-textarea {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; resize: vertical; min-height: 120px;
+  transition: border-color 0.2s;
+}
+.launch-textarea:focus { outline: none; border-color: var(--border-focus); }
+.launch-input {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: var(--radius-sm);
+  padding: 8px 12px; font-size: 13px; width: 100%;
+  transition: border-color 0.2s;
+}
+.launch-input:focus { outline: none; border-color: var(--border-focus); }
+.launch-select {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: var(--radius-sm);
+  padding: 7px 10px; font-size: 13px; cursor: pointer; width: 100%;
+}
+.launch-drop-area {
+  border: 2px dashed var(--border); border-radius: var(--radius);
+  padding: 20px 16px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--text-muted);
+  transition: border-color 0.25s, background 0.25s; cursor: pointer;
+}
+.launch-drop-area:hover { border-color: var(--blue); background: rgba(99,102,241,0.05); }
+.launch-options-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px;
+}
+.launch-action-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+  background: var(--bg-card); border-radius: var(--radius);
+  padding: 20px 24px; border: 1px solid var(--border);
+}
+.btn-launch {
+  background: var(--grad-primary); color: #fff;
+  border: none; border-radius: var(--radius-sm);
+  padding: 12px 28px; font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: opacity 0.2s, transform 0.1s;
+  letter-spacing: 0.03em;
+}
+.btn-launch:hover { opacity: 0.9; transform: translateY(-1px); }
+.btn-launch:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.launch-status { font-size: 13px; }

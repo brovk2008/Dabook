@@ -42,9 +42,11 @@
       <button class="nav-tab" data-panel="books" onclick="switchPanel('books')">Books</button>
       <button class="nav-tab" data-panel="datasets" onclick="switchPanel('datasets')">Datasets</button>
       <button class="nav-tab" data-panel="settings" onclick="switchPanel('settings')">Settings</button>
+      <button class="nav-tab" data-panel="launch" onclick="switchPanel('launch')">🚀 Launch</button>
       <button class="nav-tab" data-panel="logs" onclick="switchPanel('logs')">Logs</button>
       <div id="stale-indicator" class="stale-indicator" style="display:none">● Reconnecting…</div>
     </nav>
+
 
     <!-- Panels -->
     <main id="panels">
@@ -216,10 +218,180 @@
 
       <!-- ═══ Settings ═══ -->
       <section id="panel-settings" class="panel">
-        <div class="settings-grid" id="settings-form"></div>
-        <div class="settings-actions">
-          <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-          <button class="btn btn-ghost" onclick="loadSettings()">↺ Reset</button>
+        <div class="settings-page">
+
+          <!-- Workspace card -->
+          <div class="card settings-card">
+            <h3 class="card-title">📁 Workspace &amp; Directories</h3>
+            <div class="settings-info-row" id="ws-info-row">
+              <span class="settings-info-label">Current workspace</span>
+              <span class="settings-info-val" id="ws-path-display">—</span>
+            </div>
+            <div class="settings-info-row">
+              <span class="settings-info-label">Database</span>
+              <span class="settings-info-val" id="ws-db-display">—</span>
+            </div>
+            <div class="settings-info-row">
+              <span class="settings-info-label">Disk usage</span>
+              <span class="settings-info-val" id="ws-disk-display">—</span>
+            </div>
+            <div class="settings-info-row">
+              <span class="settings-info-label">Books / Tasks</span>
+              <span class="settings-info-val" id="ws-counts-display">—</span>
+            </div>
+          </div>
+
+          <!-- Workers card -->
+          <div class="card settings-card">
+            <h3 class="card-title">⚙️ Workers</h3>
+            <div class="settings-field">
+              <label for="s-workers-cpu">CPU Workers</label>
+              <input id="s-workers-cpu" data-key="workers.cpu" type="number" min="1" max="32" class="settings-input">
+              <span class="settings-hint">Parallel CPU-bound extract tasks</span>
+            </div>
+            <div class="settings-field">
+              <label for="s-workers-gpu">GPU Workers</label>
+              <input id="s-workers-gpu" data-key="workers.gpu" type="number" min="0" max="8" class="settings-input">
+              <span class="settings-hint">Set 0 if no GPU</span>
+            </div>
+            <div class="settings-field">
+              <label for="s-workers-io">IO Workers</label>
+              <input id="s-workers-io" data-key="workers.io" type="number" min="1" max="16" class="settings-input">
+            </div>
+            <div class="settings-field">
+              <label for="s-book-concurrency">Book Concurrency</label>
+              <input id="s-book-concurrency" data-key="book_concurrency" type="number" min="1" max="16" class="settings-input">
+              <span class="settings-hint">Max books processed in parallel</span>
+            </div>
+          </div>
+
+          <!-- Limits card -->
+          <div class="card settings-card">
+            <h3 class="card-title">🛡 Resource Limits</h3>
+            <div class="settings-field">
+              <label for="s-ram-ceil">RAM Ceiling %</label>
+              <input id="s-ram-ceil" data-key="ram_ceiling_pct" type="number" min="10" max="99" step="1" class="settings-input">
+              <span class="settings-hint">Pause workers above this RAM usage</span>
+            </div>
+            <div class="settings-field">
+              <label for="s-vram-ceil">VRAM Ceiling %</label>
+              <input id="s-vram-ceil" data-key="vram_ceiling_pct" type="number" min="10" max="99" step="1" class="settings-input">
+            </div>
+            <div class="settings-field">
+              <label for="s-min-free-gb">Min Free Disk (GB)</label>
+              <input id="s-min-free-gb" data-key="min_free_gb" type="number" min="0.5" max="100" step="0.5" class="settings-input">
+            </div>
+            <div class="settings-field">
+              <label for="s-shard-pages">Shard Pages</label>
+              <input id="s-shard-pages" data-key="shard_pages" type="number" min="1" max="500" class="settings-input">
+              <span class="settings-hint">Pages per extraction shard</span>
+            </div>
+            <div class="settings-field">
+              <label for="s-lease-s">Lease Seconds</label>
+              <input id="s-lease-s" data-key="lease_s" type="number" min="30" max="600" class="settings-input">
+            </div>
+            <div class="settings-field">
+              <label for="s-heartbeat-s">Heartbeat Seconds</label>
+              <input id="s-heartbeat-s" data-key="heartbeat_s" type="number" min="5" max="120" class="settings-input">
+            </div>
+            <div class="settings-field">
+              <label for="s-max-attempts">Max Retry Attempts</label>
+              <input id="s-max-attempts" data-key="retry.max_attempts" type="number" min="1" max="10" class="settings-input">
+            </div>
+            <div class="settings-field">
+              <label for="s-backoff-s">Retry Backoff (s)</label>
+              <input id="s-backoff-s" data-key="retry.backoff_s" type="number" min="1" max="60" step="0.5" class="settings-input">
+            </div>
+          </div>
+
+          <!-- Queue control card -->
+          <div class="card settings-card">
+            <h3 class="card-title">🎛 Queue Control</h3>
+            <div class="queue-controls-row">
+              <button class="btn btn-ghost" onclick="apiPost('/api/queue/pause')">⏸ Pause Queue</button>
+              <button class="btn btn-ghost" onclick="apiPost('/api/queue/resume')">▶ Resume Queue</button>
+              <button class="btn btn-danger" onclick="apiPost('/api/queue/drain')">⏹ Drain &amp; Stop</button>
+            </div>
+          </div>
+
+          <!-- Save row -->
+          <div class="settings-save-row">
+            <button class="btn btn-primary" id="save-settings-btn" onclick="saveSettings()">💾 Save All Settings</button>
+            <button class="btn btn-ghost" onclick="loadSettings()">↺ Reset</button>
+            <span id="settings-save-msg" class="settings-save-msg"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ Launch ═══ -->
+      <section id="panel-launch" class="panel">
+        <div class="launch-page">
+
+          <!-- Input card -->
+          <div class="card launch-card">
+            <h3 class="card-title">📄 Input PDFs</h3>
+            <div class="launch-field">
+              <label>PDF Paths (one per line, or paste folder path)</label>
+              <textarea id="launch-paths" class="launch-textarea" placeholder="/path/to/book1.pdf&#10;/path/to/book2.pdf&#10;C:\Users\you\Documents\books"></textarea>
+            </div>
+            <div class="launch-drop-area" id="launch-drop-area" ondragover="event.preventDefault()" ondrop="handleLaunchDrop(event)">
+              <span>📎 Or drag &amp; drop PDF files here</span>
+              <input id="launch-file-input" type="file" accept=".pdf" multiple style="display:none" onchange="handleLaunchFileSelect(event)">
+              <button class="btn btn-ghost btn-sm" onclick="document.getElementById('launch-file-input').click()">Browse Files</button>
+            </div>
+          </div>
+
+          <!-- Output card -->
+          <div class="card launch-card">
+            <h3 class="card-title">📂 Output Directory</h3>
+            <div class="launch-field">
+              <label for="launch-output-dir">Output / Workspace Folder</label>
+              <input id="launch-output-dir" type="text" class="launch-input" placeholder="Leave blank to use current workspace">
+              <span class="settings-hint" id="launch-ws-hint">Current: —</span>
+            </div>
+          </div>
+
+          <!-- Options card -->
+          <div class="card launch-card">
+            <h3 class="card-title">⚙️ Processing Options</h3>
+            <div class="launch-options-grid">
+              <div class="launch-field">
+                <label for="launch-profile">Profile</label>
+                <select id="launch-profile" class="launch-select">
+                  <option value="balanced">balanced (default)</option>
+                  <option value="fast">fast</option>
+                  <option value="accurate">accurate</option>
+                  <option value="lowram">lowram</option>
+                </select>
+              </div>
+              <div class="launch-field">
+                <label for="launch-modes">Dataset Modes</label>
+                <select id="launch-modes" class="launch-select">
+                  <option value="raw,rag">raw + rag (default)</option>
+                  <option value="raw">raw only</option>
+                  <option value="rag">rag only</option>
+                  <option value="raw,rag,instruct">raw + rag + instruct</option>
+                </select>
+              </div>
+              <div class="launch-field">
+                <label for="launch-formats">Export Formats</label>
+                <select id="launch-formats" class="launch-select">
+                  <option value="jsonl">jsonl (default)</option>
+                  <option value="jsonl,parquet">jsonl + parquet</option>
+                  <option value="parquet">parquet only</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Launch button -->
+          <div class="launch-action-row">
+            <button class="btn btn-launch" id="launch-btn" onclick="launchRun()">
+              🚀 Start Processing
+            </button>
+            <div id="launch-status" class="launch-status"></div>
+          </div>
+
         </div>
       </section>
 
@@ -246,3 +418,4 @@
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>
+

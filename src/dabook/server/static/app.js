@@ -75,7 +75,8 @@ function switchPanel(name) {
 
   if (name === 'books') loadBooks();
   if (name === 'datasets') loadDatasets();
-  if (name === 'settings') loadSettings();
+  if (name === 'settings') { loadSettings(); loadWorkspaceInfo(); }
+  if (name === 'launch') loadWorkspaceInfo();
 }
 
 // ─── Overview rendering ───────────────────────────────────
@@ -878,6 +879,164 @@ function fmtMB(mb) {
   return `${mb.toFixed(0)} MB`;
 }
 
+// ─── Settings ─────────────────────────────────────────────
+const SETTINGS_FIELD_MAP = {
+  'workers.cpu':        's-workers-cpu',
+  'workers.gpu':        's-workers-gpu',
+  'workers.io':         's-workers-io',
+  'book_concurrency':   's-book-concurrency',
+  'ram_ceiling_pct':    's-ram-ceil',
+  'vram_ceiling_pct':   's-vram-ceil',
+  'min_free_gb':        's-min-free-gb',
+  'shard_pages':        's-shard-pages',
+  'lease_s':            's-lease-s',
+  'heartbeat_s':        's-heartbeat-s',
+  'retry.max_attempts': 's-max-attempts',
+  'retry.backoff_s':    's-backoff-s',
+};
+
+async function loadSettings() {
+  try {
+    const res = await fetch(`${API}/api/settings`);
+    const rows = await res.json();
+    state.settings = {};
+    rows.forEach(r => { state.settings[r.k] = r.v; });
+
+    // Populate all mapped inputs
+    Object.entries(SETTINGS_FIELD_MAP).forEach(([key, id]) => {
+      const el = document.getElementById(id);
+      if (el && state.settings[key] !== undefined) el.value = state.settings[key];
+    });
+  } catch (err) {
+    console.warn('Failed to load settings:', err);
+  }
+}
+
+async function saveSettings() {
+  const payload = {};
+  Object.entries(SETTINGS_FIELD_MAP).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (el) payload[key] = el.value;
+  });
+
+  const msg = document.getElementById('settings-save-msg');
+  try {
+    const res = await fetch(`${API}/api/settings`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await res.json();
+    if (result.updated) {
+      if (msg) { msg.textContent = `✓ Saved ${result.updated.length} settings`; msg.style.color = 'var(--green)'; }
+      setTimeout(() => { if (msg) msg.textContent = ''; }, 4000);
+    }
+  } catch (err) {
+    if (msg) { msg.textContent = `✗ ${err.message}`; msg.style.color = 'var(--red)'; }
+  }
+}
+
+async function loadWorkspaceInfo() {
+  try {
+    const res = await fetch(`${API}/api/workspace`);
+    const info = await res.json();
+    const d = id => document.getElementById(id);
+    if (d('ws-path-display'))   d('ws-path-display').textContent  = info.path || '—';
+    if (d('ws-db-display'))     d('ws-db-display').textContent    = info.db_path || '—';
+    if (d('ws-disk-display'))   d('ws-disk-display').textContent  =
+      `${info.disk_used_gb} GB used / ${info.disk_total_gb} GB total (${info.disk_free_gb} GB free)`;
+    if (d('ws-counts-display')) d('ws-counts-display').textContent =
+      `${info.book_count} books · ${info.task_count} tasks`;
+    if (d('launch-ws-hint'))    d('launch-ws-hint').textContent   = `Current: ${info.path}`;
+  } catch (err) {
+    console.warn('Failed to load workspace info:', err);
+  }
+}
+
+async function apiPost(endpoint) {
+  try {
+    await fetch(`${API}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${getToken()}` },
+    });
+  } catch (err) {
+    showAlert(`Request failed: ${err.message}`);
+  }
+}
+
+// ─── Launch Panel ─────────────────────────────────────────
+function handleLaunchDrop(event) {
+  event.preventDefault();
+  const files = [...(event.dataTransfer.files || [])];
+  const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+  const ta = document.getElementById('launch-paths');
+  if (!ta) return;
+  const existing = ta.value.trim();
+  const names = pdfs.map(f => f.name).join('\n');
+  ta.value = existing ? existing + '\n' + names : names;
+  document.getElementById('launch-drop-area').style.borderColor = 'var(--green)';
+  setTimeout(() => {
+    const el = document.getElementById('launch-drop-area');
+    if (el) el.style.borderColor = '';
+  }, 1500);
+}
+
+function handleLaunchFileSelect(event) {
+  const files = [...(event.target.files || [])];
+  const ta = document.getElementById('launch-paths');
+  if (!ta) return;
+  const existing = ta.value.trim();
+  const names = files.map(f => f.name).join('\n');
+  ta.value = existing ? existing + '\n' + names : names;
+}
+
+async function launchRun() {
+  const ta = document.getElementById('launch-paths');
+  const outputDir = (document.getElementById('launch-output-dir')?.value || '').trim();
+  const profile = document.getElementById('launch-profile')?.value || 'balanced';
+  const modes = document.getElementById('launch-modes')?.value || 'raw,rag';
+  const formats = document.getElementById('launch-formats')?.value || 'jsonl';
+
+  const rawPaths = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+  if (!rawPaths.length) {
+    showAlert('Please enter at least one PDF path.');
+    return;
+  }
+
+  const btn = document.getElementById('launch-btn');
+  const statusEl = document.getElementById('launch-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Launching…'; }
+  if (statusEl) statusEl.textContent = '';
+
+  try {
+    const res = await fetch(`${API}/api/launch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify({ paths: rawPaths, output_dir: outputDir || null, profile, modes, formats }),
+    });
+    const result = await res.json();
+    if (result.ok) {
+      if (statusEl) {
+        statusEl.textContent = `✓ Processing started (PID ${result.pid}). Switch to Overview to monitor.`;
+        statusEl.style.color = 'var(--green)';
+      }
+      setTimeout(() => switchPanel('overview'), 1800);
+    } else {
+      throw new Error(result.detail || 'Unknown error');
+    }
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `✗ ${err.message}`; statusEl.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🚀 Start Processing'; }
+  }
+}
+
 // ─── Init ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   // Persist token from URL to sessionStorage
@@ -889,6 +1048,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initial load of first panel
   loadBooks();
+
+  // Auto-switch to panel from URL hash (e.g. /#settings, /#launch)
+  const hash = location.hash.replace('#', '');
+  if (hash && document.getElementById(`panel-${hash}`)) {
+    switchPanel(hash);
+  }
 });
 
 // Expose for inline onclick handlers
@@ -900,6 +1065,11 @@ window.handleFileUpload = handleFileUpload;
 window.filterBooks = filterBooks;
 window.loadSettings = loadSettings;
 window.saveSettings = saveSettings;
+window.loadWorkspaceInfo = loadWorkspaceInfo;
+window.apiPost = apiPost;
+window.launchRun = launchRun;
+window.handleLaunchDrop = handleLaunchDrop;
+window.handleLaunchFileSelect = handleLaunchFileSelect;
 window.filterLogs = filterLogs;
 window.clearLogs = clearLogs;
 window.copyDiagnostics = copyDiagnostics;

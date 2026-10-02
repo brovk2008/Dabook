@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import shutil as _shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -124,7 +125,6 @@ def create_app(
         books = []
         for r in rows:
             b = dict(r)
-            # Attach stage grid
             stages = _ro_con.execute(
                 "SELECT stage, state, COUNT(*) as cnt FROM tasks "
                 "WHERE book_id=? GROUP BY stage, state",
@@ -192,7 +192,10 @@ def create_app(
     @app.get("/api/settings")
     async def get_settings() -> JSONResponse:
         rows = _ro_con.execute("SELECT k, v, live FROM settings ORDER BY k").fetchall()
-        return JSONResponse([dict(r) for r in rows])
+        settings_list = [dict(r) for r in rows]
+        # Expose workspace path as a meta-key so the UI can display it
+        settings_list.append({"k": "_workspace_path", "v": str(workspace), "live": 0})
+        return JSONResponse(settings_list)
 
     @app.put("/api/settings")
     async def update_settings(request: Request) -> JSONResponse:
@@ -204,11 +207,112 @@ def create_app(
 
             updated = []
             for key, value in body.items():
+                if key.startswith("_"):
+                    continue  # skip meta-keys like _workspace_path
                 update_setting(con, key, value)
                 updated.append(key)
         finally:
             con.close()
         return JSONResponse({"updated": updated})
+
+    # ------------------------------------------------------------------ #
+    # Workspace info
+    # ------------------------------------------------------------------ #
+    @app.get("/api/workspace")
+    async def get_workspace_info() -> JSONResponse:
+        total, used, free = _shutil.disk_usage(workspace)
+        try:
+            book_count = _ro_con.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+            task_count = _ro_con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        except Exception:
+            book_count = 0
+            task_count = 0
+        return JSONResponse(
+            {
+                "path": str(workspace),
+                "db_path": str(db_path),
+                "disk_total_gb": round(total / 1e9, 2),
+                "disk_used_gb": round(used / 1e9, 2),
+                "disk_free_gb": round(free / 1e9, 2),
+                "book_count": book_count,
+                "task_count": task_count,
+            }
+        )
+
+    # ------------------------------------------------------------------ #
+    # Launch — start processing PDFs from the UI
+    # ------------------------------------------------------------------ #
+    @app.post("/api/launch")
+    async def launch_run(request: Request) -> JSONResponse:
+        """
+        Enqueue PDFs for processing without restarting the server.
+        Body: {
+          "paths": ["/abs/path/book.pdf", ...],
+          "output_dir": "/abs/output",  # optional
+          "profile": "balanced",
+          "modes": "raw,rag",
+          "formats": "jsonl"
+        }
+        """
+        _require_token(request)
+        import subprocess
+        import sys
+
+        body = await request.json()
+        paths: list[str] = body.get("paths", [])
+        profile: str = body.get("profile", "balanced")
+        modes: list[str] = [m.strip() for m in body.get("modes", "raw,rag").split(",")]
+        formats: list[str] = [f.strip() for f in body.get("formats", "jsonl").split(",")]
+        output_dir: str | None = body.get("output_dir") or None
+
+        if not paths:
+            raise HTTPException(400, "No paths provided")
+
+        cmd = [sys.executable, "-m", "dabook.cli", "run"]
+        cmd += paths
+        cmd += ["--workspace", output_dir if output_dir else str(workspace)]
+        cmd += ["--profile", profile]
+        cmd += ["--modes", ",".join(modes)]
+        cmd += ["--formats", ",".join(formats)]
+        cmd += ["--no-open"]  # user is already in the browser
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            return JSONResponse({"ok": True, "pid": proc.pid, "cmd": " ".join(cmd)})
+        except Exception as exc:
+            raise HTTPException(500, f"Failed to launch: {exc}") from exc
+
+    # ------------------------------------------------------------------ #
+    # Upload PDF directly via browser
+    # ------------------------------------------------------------------ #
+    @app.post("/api/upload")
+    async def upload_pdf(request: Request) -> JSONResponse:
+        _require_token(request)
+        from fastapi import UploadFile
+
+        form = await request.form()
+        files = form.getlist("files")
+        saved: list[str] = []
+        inbox = workspace / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+
+        for f in files:
+            if not isinstance(f, UploadFile):
+                continue
+            fname = f.filename or "upload.pdf"
+            if not fname.lower().endswith(".pdf"):
+                continue
+            dest = inbox / fname
+            with dest.open("wb") as out:
+                _shutil.copyfileobj(f.file, out)
+            saved.append(str(dest))
+
+        return JSONResponse({"ok": True, "saved": saved, "inbox": str(inbox)})
 
     # ------------------------------------------------------------------ #
     # Queue control
@@ -265,7 +369,6 @@ def create_app(
     async def get_dataset_preview(file: str, offset: int = 0, limit: int = 10) -> JSONResponse:
         from dabook.core.datasets import read_dataset_preview
 
-        # Security check: avoid directory traversal
         rel = Path(file)
         if ".." in rel.parts or rel.is_absolute():
             raise HTTPException(400, "Invalid file path")

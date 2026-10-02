@@ -256,6 +256,56 @@ def ui(
 
 
 # ─────────────────────────────────────────────────────────
+# settings
+# ─────────────────────────────────────────────────────────
+@app.command()
+def settings(
+    workspace: Path = typer.Option(
+        Path("./dabook_workspace"), "--workspace", "-w", help="Workspace directory"
+    ),
+    port: int = typer.Option(8766, "--port", help="Port for the settings UI (default 8766)"),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't auto-open browser"),
+) -> None:
+    """Open the full Control Room UI — change settings, set directories, and launch runs."""
+    import webbrowser
+
+    import uvicorn
+
+    from dabook.core.store.db import connect as db_connect
+    from dabook.core.workspace import get_db_path, init_workspace
+    from dabook.server.app import create_app
+
+    # Make sure the workspace + DB exist (creates them if needed)
+    ws = workspace.resolve()
+    ws.mkdir(parents=True, exist_ok=True)
+    db_path = get_db_path(ws)
+    if not db_path.exists():
+        con = db_connect(db_path)
+        init_workspace(con, ws)
+        con.close()
+        console.print(f"[dim]✓ Initialised workspace at {ws}[/dim]")
+
+    url = f"http://127.0.0.1:{port}/#settings"
+    console.print(
+        Panel(
+            f"[bold cyan]DABOOK Settings & Control Room[/bold cyan]\n\n"
+            f"  URL:        [link={url}]{url}[/link]\n"
+            f"  Workspace:  {ws}\n\n"
+            "[dim]Change workers, limits, directories, and launch new runs directly from the UI.\n"
+            "Press Ctrl+C to stop.[/dim]",
+            border_style="cyan",
+            title="⚙ Settings",
+        )
+    )
+
+    if not no_open:
+        webbrowser.open(url)
+
+    app_inst = create_app(db_path, ws)
+    uvicorn.run(app_inst, host="127.0.0.1", port=port, log_level="warning")
+
+
+# ─────────────────────────────────────────────────────────
 # status
 # ─────────────────────────────────────────────────────────
 @app.command()
