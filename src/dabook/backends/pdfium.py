@@ -117,17 +117,19 @@ class PdfiumExtractor:
                     ]
                 )
 
-                spans.append({
-                    "x0": x0,
-                    "y0": top_y,
-                    "x1": x1,
-                    "y1": bot_y,
-                    "text": raw_text,
-                    "font": fname,
-                    "weight": weight,
-                    "font_size": fs,
-                    "is_mono": is_mono,
-                })
+                spans.append(
+                    {
+                        "x0": x0,
+                        "y0": top_y,
+                        "x1": x1,
+                        "y1": bot_y,
+                        "text": raw_text,
+                        "font": fname,
+                        "weight": weight,
+                        "font_size": fs,
+                        "is_mono": is_mono,
+                    }
+                )
         except Exception as exc:
             logger.debug("Object extraction error on page %d: %s", page_idx, exc)
 
@@ -179,20 +181,22 @@ class PdfiumExtractor:
             total_chars = max(1, sum(len(s["text"]) for s in l_spans))
             is_line_mono = (mono_chars / total_chars >= 0.5) or (
                 l_spans[0]["is_mono"]
-                and clean_line_text.startswith((
-                    "01:",
-                    "02:",
-                    ";",
-                    "//",
-                    "mov",
-                    "push",
-                    "pop",
-                    "add",
-                    "sub",
-                    "xor",
-                    "call",
-                    "ret",
-                ))
+                and clean_line_text.startswith(
+                    (
+                        "01:",
+                        "02:",
+                        ";",
+                        "//",
+                        "mov",
+                        "push",
+                        "pop",
+                        "add",
+                        "sub",
+                        "xor",
+                        "call",
+                        "ret",
+                    )
+                )
             )
 
             avg_weight = sum(s["weight"] for s in l_spans) / len(l_spans)

@@ -19,9 +19,18 @@ from typing import Any
 
 # Regex patterns for boilerplate front-matter and index detection
 _BOILERPLATE_PATTERNS = [
-    re.compile(r"\b(?:all\s+rights\s+reserved|isbn(?:-1[03])?:?|cataloging-in-publication|library\s+of\s+congress)\b", re.IGNORECASE),
-    re.compile(r"\b(?:published\s+by\s+john\s+wiley|wiley\s+publishing|o'reilly\s+media|packt\s+publishing)\b", re.IGNORECASE),
-    re.compile(r"\b(?:trademarks?:|no\s+part\s+of\s+this\s+publication\s+may\s+be\s+reproduced)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:all\s+rights\s+reserved|isbn(?:-1[03])?:?|cataloging-in-publication|library\s+of\s+congress)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:published\s+by\s+john\s+wiley|wiley\s+publishing|o'reilly\s+media|packt\s+publishing)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:trademarks?:|no\s+part\s+of\s+this\s+publication\s+may\s+be\s+reproduced)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(?:printed\s+in\s+the\s+united\s+states\s+of\s+america)\b", re.IGNORECASE),
 ]
 
@@ -58,7 +67,9 @@ def is_boilerplate_node(node: dict[str, Any], page_idx: int, total_pages: int) -
     if page_idx < front_threshold:
         if any(p.search(text) for p in _BOILERPLATE_PATTERNS):
             return True
-        if any(term in title for term in ("copyright", "disclaimer", "trademarks", "publisher", "isbn")):
+        if any(
+            term in title for term in ("copyright", "disclaimer", "trademarks", "publisher", "isbn")
+        ):
             return True
 
     # 2. Back-of-book alphabetical index
@@ -72,7 +83,9 @@ def is_boilerplate_node(node: dict[str, Any], page_idx: int, total_pages: int) -
     if page_idx > max(20, total_pages - 30):
         lines = [line.strip() for line in text.split("\n") if line.strip()]
         if len(lines) >= 4:
-            index_like_lines = sum(1 for line in lines if re.search(r",\s*\d+(?:-\d+)?(?:,\s*\d+)*$", line))
+            index_like_lines = sum(
+                1 for line in lines if re.search(r",\s*\d+(?:-\d+)?(?:,\s*\d+)*$", line)
+            )
             if index_like_lines / len(lines) > 0.6:
                 return True
 
@@ -115,11 +128,15 @@ def is_valid_code_block(text: str) -> bool:
 def detect_code_language(code_text: str) -> str:
     """Identify programming or assembly language for markdown fencing."""
     lower = code_text.lower()
-    if re.search(r"\b(mov|push|pop|call|retn?|jmp|lea|cmp|test|xor|eax|ebx|ecx|edx|esp|ebp|esi|edi)\b", lower):
+    if re.search(
+        r"\b(mov|push|pop|call|retn?|jmp|lea|cmp|test|xor|eax|ebx|ecx|edx|esp|ebp|esi|edi)\b", lower
+    ):
         if re.search(r"\b(rax|rbx|rcx|rdx|rsp|rbp|rsi|rdi|r8|r9|r10|r11|r12|r13|r14|r15)\b", lower):
             return "x64_asm"
         return "x86_asm"
-    if re.search(r"\b(struct|typedef|void\*?|int|char\*?|unsigned|#include|#define|NTSTATUS)\b", code_text):
+    if re.search(
+        r"\b(struct|typedef|void\*?|int|char\*?|unsigned|#include|#define|NTSTATUS)\b", code_text
+    ):
         return "c"
     if re.search(r"\b(def\s+\w+|import\s+\w+|class\s+\w+:)\b", code_text):
         return "python"
@@ -218,17 +235,19 @@ def list_workspace_datasets(workspace: Path) -> list[dict[str, Any]]:
                     for _ in fp:
                         line_count += 1
                 dtype = f.stem.replace("all_", "")
-                results.append({
-                    "id": f"consolidated_{dtype}",
-                    "name": f.name,
-                    "scope": "workspace",
-                    "scope_label": "All Books (Consolidated)",
-                    "type": dtype,
-                    "rel_path": f"compiled/{f.name}",
-                    "size_bytes": stat.st_size,
-                    "records": line_count,
-                    "modified_at": stat.st_mtime,
-                })
+                results.append(
+                    {
+                        "id": f"consolidated_{dtype}",
+                        "name": f.name,
+                        "scope": "workspace",
+                        "scope_label": "All Books (Consolidated)",
+                        "type": dtype,
+                        "rel_path": f"compiled/{f.name}",
+                        "size_bytes": stat.st_size,
+                        "records": line_count,
+                        "modified_at": stat.st_mtime,
+                    }
+                )
             except Exception:
                 pass
 
@@ -261,17 +280,19 @@ def list_workspace_datasets(workspace: Path) -> list[dict[str, Any]]:
                         for _ in fp:
                             line_count += 1
                     dtype = f.stem
-                    results.append({
-                        "id": f"book_{book_dir.name}_{dtype}",
-                        "name": f.name,
-                        "scope": book_dir.name,
-                        "scope_label": book_title,
-                        "type": dtype,
-                        "rel_path": f"books/{book_dir.name}/datasets/{f.name}",
-                        "size_bytes": stat.st_size,
-                        "records": line_count,
-                        "modified_at": stat.st_mtime,
-                    })
+                    results.append(
+                        {
+                            "id": f"book_{book_dir.name}_{dtype}",
+                            "name": f.name,
+                            "scope": book_dir.name,
+                            "scope_label": book_title,
+                            "type": dtype,
+                            "rel_path": f"books/{book_dir.name}/datasets/{f.name}",
+                            "size_bytes": stat.st_size,
+                            "records": line_count,
+                            "modified_at": stat.st_mtime,
+                        }
+                    )
                 except Exception:
                     pass
 

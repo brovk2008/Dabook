@@ -265,12 +265,19 @@ def _stage_s04_furniture(
             is_furniture = False
 
             # Universal watermark check anywhere on page
-            if watermark_re.search(txt) or indesign_re.search(txt) or ((y0 < h * 0.06 or y1 > h * 0.94) and (
-                margin_patterns.get(txt, 0) >= 2
-                or page_num_re.match(txt)
-                or (running_head_re.match(txt) and len(txt) < 40)
-                or ("■" in txt and len(txt) < 50)
-            )):
+            if (
+                watermark_re.search(txt)
+                or indesign_re.search(txt)
+                or (
+                    (y0 < h * 0.06 or y1 > h * 0.94)
+                    and (
+                        margin_patterns.get(txt, 0) >= 2
+                        or page_num_re.match(txt)
+                        or (running_head_re.match(txt) and len(txt) < 40)
+                        or ("■" in txt and len(txt) < 50)
+                    )
+                )
+            ):
                 is_furniture = True
 
             if is_furniture:
@@ -829,7 +836,10 @@ def _stage_s13_compile(
         # Filter out front-matter publisher/dedication documents before page 25 if boilerplate filtering is enabled
         if filter_boilerplate and doc_page_start < 25:
             title_lower = current_doc_title.lower()
-            if any(term in title_lower for term in ("author", "credit", "contents at a glance", "executive", "acknowledg")):
+            if any(
+                term in title_lower
+                for term in ("author", "credit", "contents at a glance", "executive", "acknowledg")
+            ):
                 current_doc_lines = []
                 return
 
@@ -893,17 +903,19 @@ def _stage_s13_compile(
                     fallback_lines.append(txt)
         if fallback_lines:
             ftext = "\n\n".join(fallback_lines)
-            pretrain_records.append({
-                "doc_id": "doc_000",
-                "book_title": book_title,
-                "chapter_title": book_title,
-                "page_start": 1,
-                "page_end": total_pages,
-                "word_count": len(ftext.split()),
-                "char_count": len(ftext),
-                "token_count": estimate_tokens(ftext),
-                "text": ftext,
-            })
+            pretrain_records.append(
+                {
+                    "doc_id": "doc_000",
+                    "book_title": book_title,
+                    "chapter_title": book_title,
+                    "page_start": 1,
+                    "page_end": total_pages,
+                    "word_count": len(ftext.split()),
+                    "char_count": len(ftext),
+                    "token_count": estimate_tokens(ftext),
+                    "text": ftext,
+                }
+            )
 
     with open(pretrain_path, "w", encoding="utf-8") as f:
         for pr in pretrain_records:
@@ -966,7 +978,9 @@ def _stage_s13_compile(
             # Skip non-headings, figure labels, symbols, and front-matter author/credit titles
             is_valid_heading = (
                 bool(re.search(r"[a-zA-Z]", title))
-                and not title_lower.startswith(("figure", "table", "listing", "chart", "diagram", "note", "warning"))
+                and not title_lower.startswith(
+                    ("figure", "table", "listing", "chart", "diagram", "note", "warning")
+                )
                 and title not in ("–", "—", "-", "*", "...")
                 and len(title.split()) <= 8
                 and len(title) <= 60
@@ -1063,15 +1077,17 @@ def _stage_s13_compile(
                 ctx_parts.append(nodes[i + 1]["text"].strip())
             context = "\n\n".join(ctx_parts)
 
-            code_records.append({
-                "code_id": f"code_{code_idx:04d}",
-                "page": n.get("page_idx", 0) + 1,
-                "language": lang,
-                "breadcrumbs": n.get("breadcrumbs", []),
-                "surrounding_context": context,
-                "code": code_text,
-                "line_count": len(code_text.splitlines()),
-            })
+            code_records.append(
+                {
+                    "code_id": f"code_{code_idx:04d}",
+                    "page": n.get("page_idx", 0) + 1,
+                    "language": lang,
+                    "breadcrumbs": n.get("breadcrumbs", []),
+                    "surrounding_context": context,
+                    "code": code_text,
+                    "line_count": len(code_text.splitlines()),
+                }
+            )
 
     with open(code_path, "w", encoding="utf-8") as f:
         for cr in code_records:
@@ -1088,12 +1104,14 @@ def _stage_s13_compile(
     for n in train_nodes:
         if n["node_type"] in ("chapter", "section"):
             if current_chunk:
-                rag_records.append({
-                    "chunk_id": f"chunk_{chunk_idx:04d}",
-                    "page": chunk_page,
-                    "breadcrumbs": current_crumbs,
-                    "content": "\n\n".join(current_chunk),
-                })
+                rag_records.append(
+                    {
+                        "chunk_id": f"chunk_{chunk_idx:04d}",
+                        "page": chunk_page,
+                        "breadcrumbs": current_crumbs,
+                        "content": "\n\n".join(current_chunk),
+                    }
+                )
                 chunk_idx += 1
                 current_chunk = []
             current_crumbs = [*n.get("breadcrumbs", []), n.get("title", "")]
@@ -1101,22 +1119,26 @@ def _stage_s13_compile(
         elif n["text"].strip():
             current_chunk.append(n["text"])
             if sum(len(c.split()) for c in current_chunk) > 400:
-                rag_records.append({
-                    "chunk_id": f"chunk_{chunk_idx:04d}",
-                    "page": chunk_page,
-                    "breadcrumbs": current_crumbs,
-                    "content": "\n\n".join(current_chunk),
-                })
+                rag_records.append(
+                    {
+                        "chunk_id": f"chunk_{chunk_idx:04d}",
+                        "page": chunk_page,
+                        "breadcrumbs": current_crumbs,
+                        "content": "\n\n".join(current_chunk),
+                    }
+                )
                 chunk_idx += 1
                 current_chunk = []
 
     if current_chunk:
-        rag_records.append({
-            "chunk_id": f"chunk_{chunk_idx:04d}",
-            "page": chunk_page,
-            "breadcrumbs": current_crumbs,
-            "content": "\n\n".join(current_chunk),
-        })
+        rag_records.append(
+            {
+                "chunk_id": f"chunk_{chunk_idx:04d}",
+                "page": chunk_page,
+                "breadcrumbs": current_crumbs,
+                "content": "\n\n".join(current_chunk),
+            }
+        )
         chunk_idx += 1
 
     with open(rag_path, "w", encoding="utf-8") as f:

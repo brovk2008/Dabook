@@ -257,7 +257,11 @@ class Supervisor:
                 ).fetchone()
                 if row:
                     release_task_unspent(self._con, row["id"])
-                    log.info("Released task %d back to pending from dead worker %s", row["id"], w.worker_id)
+                    log.info(
+                        "Released task %d back to pending from dead worker %s",
+                        row["id"],
+                        w.worker_id,
+                    )
         except Exception as exc:
             log.warning("Error releasing task for dead worker %s: %s", w.worker_id, exc)
 
