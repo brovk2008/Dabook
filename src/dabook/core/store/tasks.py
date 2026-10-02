@@ -158,6 +158,21 @@ def mark_done(
                 WHERE id=:tid""",
             dict(s=state, now=now, dur=duration_ms, op=output_path, os2=output_sha256, tid=task_id),
         )
+        # Check if all tasks for this book are completed
+        book_row = con.execute("SELECT book_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if book_row:
+            book_id = book_row["book_id"]
+            remaining = con.execute(
+                "SELECT COUNT(*) FROM tasks WHERE book_id=? AND state NOT IN ('done', 'skipped')",
+                (book_id,),
+            ).fetchone()[0]
+            if remaining == 0:
+                con.execute(
+                    """UPDATE books
+                          SET state='done', finished_at=:now
+                        WHERE id=:bid AND state != 'done'""",
+                    dict(now=now, bid=book_id),
+                )
 
 
 def mark_failed(
@@ -203,6 +218,15 @@ def mark_failed(
                 tid=task_id,
             ),
         )
+        if new_state == "dead":
+            book_row = con.execute("SELECT book_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if book_row:
+                con.execute(
+                    """UPDATE books
+                          SET state='failed', finished_at=:now, error=:err
+                        WHERE id=:bid""",
+                    dict(now=now, err=error_msg[:1000], bid=book_row["book_id"]),
+                )
     return new_state
 
 

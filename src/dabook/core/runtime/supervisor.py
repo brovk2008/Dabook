@@ -24,7 +24,7 @@ from dabook.core.scheduler.eta import EtaEngine
 from dabook.core.scheduler.recovery import recover_leases
 from dabook.core.store.db import connect, write_txn
 from dabook.core.store.settings import SettingsCache, set_stopping
-from dabook.core.store.tasks import log_event
+from dabook.core.store.tasks import log_event, release_task_unspent
 
 log = logging.getLogger("dabook.supervisor")
 
@@ -83,6 +83,8 @@ class Supervisor:
         self._settings = SettingsCache(self._con)
         self._eta = EtaEngine()
         self._pool: dict[str, list[ManagedWorker]] = {"cpu": [], "gpu": [], "io": [], "llm": []}
+        self._death_history: dict[str, list[float]] = {"cpu": [], "gpu": [], "io": [], "llm": []}
+        self._spawn_cooldown: dict[str, float] = {"cpu": 0.0, "gpu": 0.0, "io": 0.0, "llm": 0.0}
         self._stop_evt = threading.Event()
         self._telemetry: TelemetrySampler | None = None
         self._next_recovery = time.time()
@@ -91,6 +93,10 @@ class Supervisor:
     # ------------------------------------------------------------------
     def start(self) -> None:
         log.info("Supervisor starting (workspace=%s)", self.workspace)
+
+        # Clear any stale stopping flag from previous runs
+        set_stopping(self._con, False)
+        self._settings.invalidate()
 
         # Startup recovery
         self._startup_recovery()
@@ -154,6 +160,18 @@ class Supervisor:
 
     def _reconcile(self, s: Any) -> None:
         """Spawn / drain workers to match the desired counts."""
+        if s.stopping or self._stop_evt.is_set():
+            # If stopping, do not spawn ANY new workers. Drain all existing workers.
+            for lane, workers in self._pool.items():
+                dead = [w for w in workers if not w.process.is_alive()]
+                for w in dead:
+                    self._handle_worker_death(w)
+                self._pool[lane] = [w for w in workers if w.process.is_alive()]
+                for w in self._pool[lane]:
+                    if not w.draining:
+                        self._mark_draining(w)
+            return
+
         want = {
             "cpu": s.workers_cpu,
             "gpu": s.workers_gpu,
@@ -179,6 +197,7 @@ class Supervisor:
                     if self._crash_loop_breaker(lane):
                         break
                     self._spawn(lane)
+                    time.sleep(0.1)  # Stagger process spawns to avoid storm
 
             elif len(alive) > desired:
                 # Mark excess workers as draining (idlest first)
@@ -217,32 +236,56 @@ class Supervisor:
 
     def _handle_worker_death(self, w: ManagedWorker) -> None:
         code = w.process.exitcode
+        now = time.time()
         log.warning("Worker %s died (exitcode=%s)", w.worker_id, code)
-        # Classify OOM
-        if code in (-9, -11) or code == 1:
-            w.crash_count += 1
-            w.last_crash = time.time()
-            if code == -9:
-                log_event(
-                    self._con,
-                    "WARNING",
-                    "worker_oom",
-                    f"Worker {w.worker_id} killed (exitcode={code})",
-                    worker_id=w.worker_id,
-                )
-        with write_txn(self._con):
-            self._con.execute("UPDATE workers SET state='dead' WHERE id=?", (w.worker_id,))
+
+        self._death_history[w.resource_class].append(now)
+
+        # Try joining and closing dead process to free OS resources
+        try:
+            w.process.join(timeout=0.1)
+            w.process.close()
+        except Exception:
+            pass
+
+        # Mark worker dead and immediately release any uncompleted task it held
+        try:
+            with write_txn(self._con):
+                self._con.execute("UPDATE workers SET state='dead' WHERE id=?", (w.worker_id,))
+                row = self._con.execute(
+                    "SELECT id FROM tasks WHERE worker_id=? AND state='running'", (w.worker_id,)
+                ).fetchone()
+                if row:
+                    release_task_unspent(self._con, row["id"])
+                    log.info("Released task %d back to pending from dead worker %s", row["id"], w.worker_id)
+        except Exception as exc:
+            log.warning("Error releasing task for dead worker %s: %s", w.worker_id, exc)
+
+        if code == -9:
+            log_event(
+                self._con,
+                "WARNING",
+                "worker_oom",
+                f"Worker {w.worker_id} killed (exitcode={code})",
+                worker_id=w.worker_id,
+            )
 
     def _crash_loop_breaker(self, lane: str) -> bool:
         """Return True if spawning this lane should be suppressed."""
         now = time.time()
-        recent = [
-            w
-            for w in self._pool[lane]
-            if w.crash_count >= 1 and (now - w.last_crash) < self.CRASH_LOOP_WINDOW
+        if now < self._spawn_cooldown.get(lane, 0.0):
+            return True
+        self._death_history[lane] = [
+            t for t in self._death_history[lane] if (now - t) < self.CRASH_LOOP_WINDOW
         ]
-        if len(recent) >= self.CRASH_LOOP_LIMIT:
-            log.error("Crash loop detected in %s lane — suppressing spawn for 5 min", lane)
+        if len(self._death_history[lane]) >= self.CRASH_LOOP_LIMIT:
+            log.error(
+                "Crash loop detected in %s lane (%d exits in %ds) — backing off for 30s",
+                lane,
+                len(self._death_history[lane]),
+                int(self.CRASH_LOOP_WINDOW),
+            )
+            self._spawn_cooldown[lane] = now + 30.0
             return True
         return False
 
